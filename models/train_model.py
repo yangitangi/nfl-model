@@ -95,17 +95,45 @@ def prepare_data(df: pd.DataFrame):
 
 
 # ---------------------------------------------------------------------------
+# MARGIN TARGET TRANSFORM (config.MARGIN_TARGET_MODE)
+# ---------------------------------------------------------------------------
+def get_margin_target(df: pd.DataFrame) -> np.ndarray:
+    """
+    The regression target for the margin model. See config.MARGIN_TARGET_MODE
+    for why "residual" mode (predicting the gap to the market line, rather
+    than the margin itself) is worth trying.
+    """
+    if config.MARGIN_TARGET_MODE == "residual":
+        return (df["actual_margin"] - df["spread_line"]).values
+    return df["actual_margin"].values
+
+
+def reconstruct_margin(df: pd.DataFrame, raw_pred: np.ndarray) -> np.ndarray:
+    """
+    Converts the model's raw output back to an actual-margin-scale
+    prediction. In "residual" mode, adds the market line back; a missing
+    spread_line (a future game with no line posted yet) falls back to a
+    0-point offset rather than leaving the prediction undefined.
+    """
+    if config.MARGIN_TARGET_MODE == "residual":
+        offset = df["spread_line"].fillna(0).values
+        return raw_pred + offset
+    return raw_pred
+
+
+# ---------------------------------------------------------------------------
 # MODEL TRAINING
 # ---------------------------------------------------------------------------
 def train_margin_model(train: pd.DataFrame, feature_cols: list[str]):
     """
-    Trains a regression model predicting point margin (home_score - away_score).
-    Point margin is used as the primary target (rather than plain win/loss)
-    because it's more informative — win probability and spread predictions
-    can both be derived from it, but not vice versa.
+    Trains a regression model predicting point margin (home_score - away_score)
+    -- or, in "residual" mode, the gap between that margin and the market
+    line (see get_margin_target). Point margin (rather than plain win/loss)
+    is the underlying target either way, since win probability and spread
+    predictions can both be derived from it, but not vice versa.
     """
     X_train = train[feature_cols]
-    y_train = train["actual_margin"]
+    y_train = get_margin_target(train)
 
     if XGBOOST_AVAILABLE:
         model = XGBRegressor(
@@ -151,7 +179,7 @@ def evaluate(model, calibrator, test: pd.DataFrame, feature_cols: list[str]) -> 
     y_test_margin = test["actual_margin"].values
     y_test_win = test["home_win"].values
 
-    pred_margin = model.predict(X_test)
+    pred_margin = reconstruct_margin(test, model.predict(X_test))
     pred_win_prob = calibrator.predict_proba(pred_margin.reshape(-1, 1))[:, 1]
     pred_win = (pred_win_prob > 0.5).astype(int)
 
@@ -222,7 +250,7 @@ def run_training_pipeline():
     model = train_margin_model(train, feature_cols)
 
     print("Training win-probability calibrator...")
-    train_pred_margin = model.predict(train[feature_cols])
+    train_pred_margin = reconstruct_margin(train, model.predict(train[feature_cols]))
     calibrator = train_calibration_model(train_pred_margin, train["home_win"].values)
 
     results = evaluate(model, calibrator, test, feature_cols)
@@ -235,6 +263,10 @@ def run_training_pipeline():
     joblib.dump(model, model_path)
     joblib.dump(calibrator, calibrator_path)
     joblib.dump(feature_cols, config.MODELS_DIR / "feature_columns.joblib")
+    # Pinned alongside the model so inference code (the dashboard) always
+    # reconstructs margins the same way this model was trained, even if
+    # config.MARGIN_TARGET_MODE changes later without a retrain.
+    joblib.dump(config.MARGIN_TARGET_MODE, config.MODELS_DIR / "margin_target_mode.joblib")
     print(f"\n[saved] {model_path}")
     print(f"[saved] {calibrator_path}")
 

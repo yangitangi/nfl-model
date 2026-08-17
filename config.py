@@ -114,6 +114,17 @@ TARGET_VARIABLE = "point_margin"   # "point_margin" (regression) or "win_flag" (
 MODEL_TYPE = "xgboost"             # "xgboost", "logistic", "linear"
 RANDOM_SEED = 42
 
+# "raw": the model predicts actual_margin directly, from scratch.
+# "residual": the model predicts (actual_margin - spread_line) -- a small
+# correction to the market line -- and spread_line is added back at
+# prediction time. spread_line is already the single strongest feature
+# (~17-22% importance), so asking the model to only learn the leftover gap
+# is a lower-variance problem than reconstructing the whole margin. Requires
+# FEATURES["market"] on; missing spread_line at prediction time (a future
+# game with no line posted yet) falls back to a 0-point offset (pick'em
+# prior) rather than leaving the prediction undefined.
+MARGIN_TARGET_MODE = "residual"   # "raw" or "residual"
+
 # ---------------------------------------------------------------------------
 # PLAY-BY-PLAY COLUMN SELECTION
 # ---------------------------------------------------------------------------
