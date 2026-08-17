@@ -1,0 +1,15 @@
+# Raw data cache — large (~300MB) and fully regenerable via data/fetch_data.py
+data/raw/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env / secrets
+.env
+
+# OS
+.DS_Store
+Thumbs.db
