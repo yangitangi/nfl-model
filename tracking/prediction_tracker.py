@@ -224,8 +224,48 @@ def update_results(season: int, week: int):
 
 
 # ---------------------------------------------------------------------------
-# REPORT — model vs. Vegas on graded games, bucketed by edge size
+# REPORT — model vs. Vegas on graded games, spread and moneyline kept
+# separate throughout since a model can be sharper on one than the other.
 # ---------------------------------------------------------------------------
+def _add_grading_columns(graded: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds home_win, _ats_hit (did the side the model leaned toward vs. the
+    OPENING spread actually cover?), and _ml_hit (did the side the model
+    favored vs. the fair/vig-free moneyline actually win? NaN where no
+    moneyline was captured) -- the two independent "did following the
+    model's lean pay off" checks, used by both the per-week breakdown and
+    the season-aggregate section below.
+    """
+    graded = graded.copy()
+    graded["home_win"] = (graded["actual_winner"] == "home").astype(int)
+
+    covered_home = (graded["actual_margin"] - graded["open_spread_line"]) > 0
+    model_leans_home = graded["spread_edge_open"] > 0
+    graded["_ats_hit"] = np.where(model_leans_home, covered_home, ~covered_home)
+
+    has_ml = graded["ml_edge_open"].notna()
+    ml_leans_home = graded["ml_edge_open"] > 0
+    ml_hit = np.where(ml_leans_home, graded["home_win"] == 1, graded["home_win"] == 0)
+    graded["_ml_hit"] = np.where(has_ml, ml_hit, np.nan)
+
+    return graded
+
+
+def _print_week_breakdown(graded: pd.DataFrame):
+    """Per-week table so the spread vs. moneyline trend is visible as weeks
+    accumulate toward Week 18, rather than only ever seeing one lump total."""
+    print("\n--- Week-by-week: spread vs. moneyline ---")
+    header = f"{'Week':<6}{'N':<5}{'Model MAE':<12}{'Spread ATS':<13}{'Moneyline':<14}"
+    print(header)
+    print("-" * len(header))
+    for wk, g in sorted(graded.groupby("week")):
+        mae = (g["pred_margin"] - g["actual_margin"]).abs().mean()
+        ats = g["_ats_hit"].mean()
+        ml_n = int(g["_ml_hit"].notna().sum())
+        ml_str = f"{g['_ml_hit'].mean():.0%} (n={ml_n})" if ml_n else "n/a"
+        print(f"{wk:<6}{len(g):<5}{mae:<12.2f}{ats:<13.1%}{ml_str:<14}")
+
+
 def report(season: int = None, week: int = None):
     log = _load_log()
     graded = log[log["graded_at"].notna()].copy()
@@ -239,7 +279,7 @@ def report(season: int = None, week: int = None):
         print(f"No graded games yet ({scope}). Run `update-results` after games are final.")
         return
 
-    graded["home_win"] = (graded["actual_winner"] == "home").astype(int)
+    graded = _add_grading_columns(graded)
     n = len(graded)
     print(f"\n=== BACKTEST: {n} graded game(s), {scope} ===\n")
 
@@ -261,33 +301,32 @@ def report(season: int = None, week: int = None):
         print(f"\nVegas (close) MAE:     {close_mae:.2f} pts  ({has_close.sum()} games with a closing line)")
         print(f"Vegas (close) win acc: {(close_pred_win == c['home_win']).mean():.1%}")
 
-    # ATS: did the side the model leaned toward (relative to the OPENING
-    # line) actually cover that spread? This is the real test of whether
-    # following the model's edge would have been worth anything, as
-    # opposed to just whether the raw margin prediction was close.
-    covered_home = (graded["actual_margin"] - graded["open_spread_line"]) > 0
-    model_leans_home = graded["spread_edge_open"] > 0
-    model_covered = np.where(model_leans_home, covered_home, ~covered_home)
-    print(f"\nATS following the model's lean vs. the opening line: "
-          f"{model_covered.mean():.1%} ({n} games)")
-
-    print("\n--- Does a bigger spread disagreement mean more likely right? ---")
+    # SPREAD: did the side the model leaned toward (relative to the OPENING
+    # line) actually cover? This is the real test of whether following the
+    # model's spread edge would have been worth anything, as opposed to
+    # just whether the raw margin prediction was numerically close.
+    print("\n--- SPREAD performance (ATS) ---")
+    print(f"Following the model's lean vs. the opening line: {graded['_ats_hit'].mean():.1%} ({n} games)")
+    print("Does a bigger spread disagreement mean more likely right?")
     graded["_edge_bucket"] = pd.cut(
         graded["spread_edge_open"].abs(), bins=[0, 1, 2, 4, np.inf],
         labels=["0-1 pt", "1-2 pt", "2-4 pt", "4+ pt"],
     )
-    graded["_covered"] = model_covered
-    bucket_stats = graded.groupby("_edge_bucket", observed=True)["_covered"].agg(["mean", "count"])
+    bucket_stats = graded.groupby("_edge_bucket", observed=True)["_ats_hit"].agg(["mean", "count"])
     for label, row in bucket_stats.iterrows():
         print(f"  {label:8s}  hit rate {row['mean']:.1%}  (n={int(row['count'])})")
 
-    if graded["ml_edge_open"].notna().any():
-        has_ml = graded["ml_edge_open"].notna()
-        ml = graded[has_ml]
-        ml_leans_home = ml["ml_edge_open"] > 0
-        ml_correct = np.where(ml_leans_home, ml["home_win"] == 1, ml["home_win"] == 0)
-        print(f"\nMoneyline: model's favored side (vs. fair market) won "
-              f"{np.mean(ml_correct):.1%} of the time ({has_ml.sum()} games)")
+    # MONEYLINE: did the side the model favored (relative to the fair,
+    # vig-removed market price) actually win outright? Independent from the
+    # spread check above -- a model can be sharper on one than the other.
+    if graded["_ml_hit"].notna().any():
+        has_ml = graded["_ml_hit"].notna()
+        print("\n--- MONEYLINE performance ---")
+        print(f"Model's favored side (vs. fair market) won "
+              f"{graded['_ml_hit'].mean():.1%} of the time ({has_ml.sum()} games)")
+
+    if week is None and graded["week"].nunique() > 1:
+        _print_week_breakdown(graded)
 
     print(
         "\nSample size caution: this is only meaningful once it accumulates "
