@@ -295,7 +295,7 @@ def compute_team_form_snapshot(team_game: pd.DataFrame) -> pd.DataFrame:
     return snapshot
 
 
-def build_upcoming_features(season: int = None) -> pd.DataFrame:
+def build_upcoming_features(season: int = None, force_refresh: bool = False) -> pd.DataFrame:
     """
     Builds a game-level feature row for each upcoming (unplayed) game in
     `season` (defaults to config.CURRENT_SEASON), using each team's rolling
@@ -306,6 +306,11 @@ def build_upcoming_features(season: int = None) -> pd.DataFrame:
     the saved model + feature_columns.joblib can be applied directly. There
     are no outcome columns (actual_margin/win/covered_spread) since these
     games haven't been played yet.
+
+    force_refresh re-downloads the schedule instead of using the local cache
+    -- needed to pick up market line movement or final scores as the week
+    progresses (e.g. the weekly prediction tracker). Historical play-by-play
+    is always read from cache regardless, since completed seasons don't change.
     """
     season = config.CURRENT_SEASON if season is None else season
     window = config.ROLLING_WINDOW_GAMES
@@ -318,7 +323,7 @@ def build_upcoming_features(season: int = None) -> pd.DataFrame:
 
     # max_season=season pulls in the upcoming season too — fetch_schedules'
     # default range stops at config.END_SEASON, which wouldn't include it.
-    schedules = fetch_schedules(max_season=season)
+    schedules = fetch_schedules(max_season=season, force_refresh=force_refresh)
     schedules = standardize_team_abbrs(schedules, ["home_team", "away_team"])
     if not config.INCLUDE_PLAYOFFS:
         schedules = schedules[schedules["game_type"] == "REG"]
