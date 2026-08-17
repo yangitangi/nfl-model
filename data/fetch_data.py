@@ -100,16 +100,27 @@ def fetch_all_seasons(seasons: list[int] = None, force_refresh: bool = False) ->
     return combined
 
 
-def fetch_schedules(force_refresh: bool = False) -> pd.DataFrame:
+def fetch_schedules(force_refresh: bool = False, min_season: int = None,
+                     max_season: int = None) -> pd.DataFrame:
     """
     Fetch the full game schedule (all seasons, includes final scores,
-    rest days, and Vegas lines when available).
+    rest days, and Vegas lines when available), filtered to
+    [min_season, max_season] (defaults to config.START_SEASON..config.END_SEASON).
+
+    The season filter is applied on BOTH the cache-hit and fresh-download
+    paths — a cache hit previously skipped it and silently returned nflverse's
+    full raw range (1999-present) instead of the configured range. Pass
+    max_season=config.CURRENT_SEASON explicitly to include the upcoming,
+    not-yet-played season (e.g. for the dashboard's future-game predictions).
     """
     local_path = config.RAW_DATA_DIR / "schedules.parquet"
+    min_season = config.START_SEASON if min_season is None else min_season
+    max_season = config.END_SEASON if max_season is None else max_season
 
     if local_path.exists() and not force_refresh:
         print(f"  [cache] Schedules already on disk -> {local_path.name}")
-        return pd.read_parquet(local_path)
+        df = pd.read_parquet(local_path)
+        return df[df["season"].between(min_season, max_season)]
 
     print("  [download] Schedules from nflverse...")
     try:
@@ -121,9 +132,7 @@ def fetch_schedules(force_refresh: bool = False) -> pd.DataFrame:
 
     local_path.write_bytes(response.content)
     df = pd.read_parquet(local_path)
-
-    # Filter to configured season range only
-    df = df[df["season"].between(config.START_SEASON, config.END_SEASON)]
+    df = df[df["season"].between(min_season, max_season)]
     print(f"  [saved] {len(df):,} games -> {local_path.name}")
     return df
 

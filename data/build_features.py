@@ -22,6 +22,18 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from data.fetch_data import fetch_all_seasons, fetch_schedules, standardize_team_abbrs
 
+# Per-team-game stats that get rolled into trailing averages. Shared between
+# add_rolling_features (historical training rows) and compute_team_form_snapshot
+# (the same math, evaluated one game past the end of a team's played history,
+# for upcoming-game predictions) so the two can't drift out of sync.
+ROLLING_STAT_COLS = [
+    "off_epa_per_play", "off_success_rate",
+    "def_epa_per_play_allowed", "def_success_rate_allowed",
+    "turnovers_lost", "turnovers_forced",
+    "qb_epa_per_dropback", "qb_cpoe", "qb_air_yards_per_att",
+    "point_margin",
+]
+
 
 def build_team_game_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     """
@@ -162,18 +174,10 @@ def add_rolling_features(team_game: pd.DataFrame) -> pd.DataFrame:
     """
     team_game = team_game.sort_values(["team", "gameday"]).reset_index(drop=True)
 
-    stat_cols = [
-        "off_epa_per_play", "off_success_rate",
-        "def_epa_per_play_allowed", "def_success_rate_allowed",
-        "turnovers_lost", "turnovers_forced",
-        "qb_epa_per_dropback", "qb_cpoe", "qb_air_yards_per_att",
-        "point_margin",
-    ]
-
     window = config.ROLLING_WINDOW_GAMES
     min_games = config.MIN_GAMES_FOR_ROLLING
 
-    for col in stat_cols:
+    for col in ROLLING_STAT_COLS:
         rolled = (
             team_game.groupby("team")[col]
             .transform(lambda s: s.shift(1).rolling(window=window, min_periods=min_games).mean())
@@ -265,6 +269,129 @@ def build_feature_table(seasons: list[int] = None, save: bool = True) -> pd.Data
         out_path = config.PROCESSED_DATA_DIR / "game_level_features.parquet"
         game_level.to_parquet(out_path, index=False)
         print(f"[saved] {len(game_level):,} games -> {out_path}")
+
+    return game_level
+
+
+def compute_team_form_snapshot(team_game: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per team: the rolling stat averages that team carries INTO their
+    next (not yet played) game — the mean of their last ROLLING_WINDOW_GAMES
+    played games. This is mathematically what add_rolling_features' shift+
+    rolling would produce for a hypothetical next row, since both only ever
+    look at prior games. Carries across season boundaries here too, matching
+    the training pipeline (team strength doesn't reset to zero on Week 1).
+    """
+    window = config.ROLLING_WINDOW_GAMES
+    roll_suffix = f"_roll{window}"
+
+    team_game_sorted = team_game.sort_values(["team", "gameday"])
+    snapshot = (
+        team_game_sorted.groupby("team")[ROLLING_STAT_COLS]
+        .apply(lambda g: g.tail(window).mean())
+        .rename(columns={c: f"{c}{roll_suffix}" for c in ROLLING_STAT_COLS})
+        .reset_index()
+    )
+    return snapshot
+
+
+def build_upcoming_features(season: int = None) -> pd.DataFrame:
+    """
+    Builds a game-level feature row for each upcoming (unplayed) game in
+    `season` (defaults to config.CURRENT_SEASON), using each team's rolling
+    form as of their most recent PLAYED game — which may be from the prior
+    season, since rolling stats intentionally carry over season boundaries.
+
+    Uses the same feature column names as game_level_features.parquet, so
+    the saved model + feature_columns.joblib can be applied directly. There
+    are no outcome columns (actual_margin/win/covered_spread) since these
+    games haven't been played yet.
+    """
+    season = config.CURRENT_SEASON if season is None else season
+    window = config.ROLLING_WINDOW_GAMES
+    roll_suffix = f"_roll{window}"
+    snapshot_cols = [f"{c}{roll_suffix}" for c in ROLLING_STAT_COLS]
+
+    print("Loading raw data...")
+    pbp = fetch_all_seasons()
+    pbp = standardize_team_abbrs(pbp, ["home_team", "away_team", "posteam", "defteam"])
+
+    # max_season=season pulls in the upcoming season too — fetch_schedules'
+    # default range stops at config.END_SEASON, which wouldn't include it.
+    schedules = fetch_schedules(max_season=season)
+    schedules = standardize_team_abbrs(schedules, ["home_team", "away_team"])
+    if not config.INCLUDE_PLAYOFFS:
+        schedules = schedules[schedules["game_type"] == "REG"]
+
+    played = schedules[schedules["home_score"].notna()]
+    upcoming = schedules[
+        (schedules["season"] == season) & (schedules["home_score"].isna())
+    ].copy()
+
+    if upcoming.empty:
+        print(f"No upcoming games found for season {season}.")
+        return pd.DataFrame()
+
+    print("Aggregating historical plays to team-game level...")
+    team_game = build_team_game_stats(pbp)
+    team_game = attach_opponent_and_turnovers_forced(team_game)
+    team_game = add_schedule_context(team_game, played)
+
+    print(f"Computing team form snapshots (last {window} games played)...")
+    snapshot = compute_team_form_snapshot(team_game)
+
+    # Weather fill for upcoming games: forecasts don't exist this far out, so
+    # temp/wind are ~always NaN even for outdoor stadiums (unlike training
+    # data, where it's ~5% missing). Fall back to the historical outdoor
+    # median; dome/closed/open stadiums get the same neutral defaults used
+    # in training. Medians come from `played`, not `upcoming`, since the
+    # latter's temp/wind columns are ~100% NaN and would produce NaN medians.
+    is_outdoor_hist = played["roof"].isin(["outdoors", "open"])
+    outdoor_temp_median = played.loc[is_outdoor_hist, "temp"].median()
+    outdoor_wind_median = played.loc[is_outdoor_hist, "wind"].median()
+
+    upcoming["is_outdoor"] = upcoming["roof"].isin(["outdoors", "open"]).astype(int)
+    outdoor_mask = upcoming["is_outdoor"] == 1
+    upcoming["temp"] = np.where(outdoor_mask, outdoor_temp_median, config.DOME_DEFAULT_TEMP_F)
+    upcoming["wind"] = np.where(outdoor_mask, outdoor_wind_median, config.DOME_DEFAULT_WIND_MPH)
+
+    print(f"Building feature rows for {len(upcoming):,} upcoming games...")
+    home_snapshot = snapshot.rename(
+        columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in snapshot_cols}}
+    )
+    away_snapshot = snapshot.rename(
+        columns={**{"team": "away_team"}, **{c: f"away_{c}" for c in snapshot_cols}}
+    )
+
+    game_level = upcoming.merge(home_snapshot, on="home_team", how="left")
+    game_level = game_level.merge(away_snapshot, on="away_team", how="left")
+
+    game_level["home_rest_days"] = game_level["home_rest"]
+    game_level["away_rest_days"] = game_level["away_rest"]
+    # No 2026 games have been played yet, so every team enters every
+    # upcoming game — Week 1 or Week 18 — with 0 completed games this season.
+    game_level["home_games_played_this_season"] = 0
+    game_level["away_games_played_this_season"] = 0
+
+    keep_cols = [
+        "game_id", "season", "week", "game_type", "gameday",
+        "home_team", "away_team", "div_game", "spread_line", "total_line",
+        "is_outdoor", "temp", "wind",
+        "home_rest_days", "away_rest_days",
+        "home_games_played_this_season", "away_games_played_this_season",
+    ] + [f"home_{c}" for c in snapshot_cols] + [f"away_{c}" for c in snapshot_cols]
+
+    game_level = game_level[keep_cols].copy()
+    game_level["gameday"] = pd.to_datetime(game_level["gameday"])
+    game_level = game_level.sort_values(["week", "gameday"]).reset_index(drop=True)
+
+    missing = game_level[f"home_{snapshot_cols[0]}"].isna() | game_level[f"away_{snapshot_cols[0]}"].isna()
+    if missing.any():
+        teams = pd.concat([
+            game_level.loc[missing, "home_team"], game_level.loc[missing, "away_team"],
+        ]).unique()
+        print(f"[warn] {missing.sum()} upcoming games involve a team with no rolling "
+              f"history in {config.START_SEASON}-{config.END_SEASON} data: {sorted(teams)}")
 
     return game_level
 
