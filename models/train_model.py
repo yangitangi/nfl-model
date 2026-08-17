@@ -38,19 +38,37 @@ except ImportError:
 # ---------------------------------------------------------------------------
 def get_feature_columns(df: pd.DataFrame) -> list[str]:
     """
-    Picks model input columns from the processed table: all rolling stat
-    columns, rest days, division-game flag, and games played so far. Market
-    columns (spread_line/total_line) are included only if config.FEATURES
-    turns them on — kept separate so you can train a model with vs without
-    market info and see how much the market alone already explains.
+    Picks model input columns from the processed table, gated by
+    config.FEATURES so flags actually control what the model sees (rather
+    than just documenting intent) — kept separate so you can turn a feature
+    family on/off and see how much it's actually contributing.
+
+    Rolling stat columns (home_/away_ + _rollN) are matched to a flag via
+    config.FEATURE_COLUMN_GROUPS; any rolling column with no entry there
+    (e.g. point_margin_roll5) is always included as a core signal.
     """
     roll_suffix = f"_roll{config.ROLLING_WINDOW_GAMES}"
-    feature_cols = [c for c in df.columns if c.endswith(roll_suffix)]
-    feature_cols += ["home_rest_days", "away_rest_days", "div_game",
-                      "home_games_played_this_season", "away_games_played_this_season"]
+    all_roll_cols = [c for c in df.columns if c.endswith(roll_suffix)]
+
+    def base_stat_name(col: str) -> str:
+        name = col[len("home_"):] if col.startswith("home_") else col[len("away_"):]
+        return name[: -len(roll_suffix)]
+
+    feature_cols = []
+    for c in all_roll_cols:
+        group = config.FEATURE_COLUMN_GROUPS.get(base_stat_name(c))
+        if group is None or config.FEATURES.get(group, True):
+            feature_cols.append(c)
+
+    if config.FEATURES.get("rest_travel", False):
+        feature_cols += ["home_rest_days", "away_rest_days", "div_game",
+                          "home_games_played_this_season", "away_games_played_this_season"]
 
     if config.FEATURES.get("market", False):
         feature_cols += ["spread_line", "total_line"]
+
+    if config.FEATURES.get("weather", False):
+        feature_cols += ["is_outdoor", "temp", "wind"]
 
     return feature_cols
 

@@ -63,6 +63,13 @@ def build_team_game_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     qb_stats = dropbacks.groupby(["game_id", "posteam"]).agg(
         qb_epa_per_dropback=("qb_epa", "mean"),
         qb_cpoe=("cpoe", "mean"),
+        # Mean intended air yards per dropback — how far downfield a QB
+        # targets on average. Sacks/scrambles have no air_yards and are
+        # skipped by mean() rather than counted as 0, so this only reflects
+        # actual throws. Paired with CPOE under "qb_aggressiveness": CPOE
+        # measures accuracy vs. expectation, this measures willingness to
+        # push the ball downfield in the first place.
+        qb_air_yards_per_att=("air_yards", "mean"),
     ).reset_index().rename(columns={"posteam": "team"})
 
     # --- Combine into one team-game row ---
@@ -96,7 +103,7 @@ def add_schedule_context(team_game: pd.DataFrame, schedules: pd.DataFrame) -> pd
     home_side = schedules[[
         "game_id", "season", "week", "game_type", "gameday", "home_team", "away_team",
         "home_score", "away_score", "home_rest", "away_rest", "div_game",
-        "spread_line", "total_line",
+        "spread_line", "total_line", "roof", "temp", "wind",
     ]].copy()
     home_side["team"] = home_side["home_team"]
     home_side["is_home"] = 1
@@ -107,7 +114,7 @@ def add_schedule_context(team_game: pd.DataFrame, schedules: pd.DataFrame) -> pd
     away_side = schedules[[
         "game_id", "season", "week", "game_type", "gameday", "home_team", "away_team",
         "home_score", "away_score", "home_rest", "away_rest", "div_game",
-        "spread_line", "total_line",
+        "spread_line", "total_line", "roof", "temp", "wind",
     ]].copy()
     away_side["team"] = away_side["away_team"]
     away_side["is_home"] = 0
@@ -116,9 +123,27 @@ def add_schedule_context(team_game: pd.DataFrame, schedules: pd.DataFrame) -> pd
     away_side["opp_score"] = away_side["home_score"]
 
     schedule_long = pd.concat([home_side, away_side], ignore_index=True)
+
+    # Weather: nflverse only records temp/wind for true outdoor games — dome,
+    # closed-roof, and retractable-open games are climate controlled and come
+    # through as NaN. Fill those with neutral "non-factor" defaults instead of
+    # leaving NaN (which would otherwise drop those games from training via
+    # the dropna in prepare_data). Genuinely missing outdoor readings (rare,
+    # ~5% of outdoor games) get the outdoor median rather than the dome default.
+    schedule_long["is_outdoor"] = schedule_long["roof"].isin(["outdoors", "open"]).astype(int)
+    outdoor_mask = schedule_long["is_outdoor"] == 1
+    outdoor_temp_median = schedule_long.loc[outdoor_mask, "temp"].median()
+    outdoor_wind_median = schedule_long.loc[outdoor_mask, "wind"].median()
+
+    schedule_long["temp"] = schedule_long["temp"].where(outdoor_mask, config.DOME_DEFAULT_TEMP_F)
+    schedule_long["wind"] = schedule_long["wind"].where(outdoor_mask, config.DOME_DEFAULT_WIND_MPH)
+    schedule_long["temp"] = schedule_long["temp"].fillna(outdoor_temp_median)
+    schedule_long["wind"] = schedule_long["wind"].fillna(outdoor_wind_median)
+
     schedule_long = schedule_long[[
         "game_id", "season", "week", "game_type", "gameday", "team", "is_home",
-        "rest_days", "div_game", "spread_line", "total_line", "team_score", "opp_score",
+        "rest_days", "div_game", "spread_line", "total_line",
+        "is_outdoor", "temp", "wind", "team_score", "opp_score",
     ]]
 
     merged = team_game.merge(schedule_long, on=["game_id", "team"], how="inner")
@@ -141,7 +166,7 @@ def add_rolling_features(team_game: pd.DataFrame) -> pd.DataFrame:
         "off_epa_per_play", "off_success_rate",
         "def_epa_per_play_allowed", "def_success_rate_allowed",
         "turnovers_lost", "turnovers_forced",
-        "qb_epa_per_dropback", "qb_cpoe",
+        "qb_epa_per_dropback", "qb_cpoe", "qb_air_yards_per_att",
         "point_margin",
     ]
 
@@ -171,8 +196,12 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
     """
     roll_suffix = f"_roll{config.ROLLING_WINDOW_GAMES}"
     rolling_cols = [c for c in team_game_rolled.columns if c.endswith(roll_suffix)]
-    keep_cols = ["game_id", "season", "week", "game_type", "gameday", "team",
-                 "is_home", "rest_days", "div_game", "spread_line", "total_line",
+    # Columns that describe the game itself (not a specific team) and should
+    # stay unprefixed rather than becoming home_x/away_x duplicates.
+    shared_game_cols = ["game_id", "season", "week", "game_type", "gameday",
+                         "div_game", "spread_line", "total_line",
+                         "is_outdoor", "temp", "wind"]
+    keep_cols = shared_game_cols + ["team", "is_home", "rest_days",
                  "games_played_this_season", "point_margin", "win"] + rolling_cols
 
     slim = team_game_rolled[keep_cols]
@@ -181,11 +210,9 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
     away = slim[slim["is_home"] == 0].copy()
 
     home = home.rename(columns={c: f"home_{c}" for c in home.columns
-                                  if c not in ["game_id", "season", "week", "game_type",
-                                               "gameday", "div_game", "spread_line", "total_line"]})
+                                  if c not in shared_game_cols})
     away = away.rename(columns={c: f"away_{c}" for c in away.columns
-                                  if c not in ["game_id", "season", "week", "game_type",
-                                               "gameday", "div_game", "spread_line", "total_line"]})
+                                  if c not in shared_game_cols})
 
     away_only_cols = ["game_id"] + [c for c in away.columns if c.startswith("away_")]
 

@@ -61,15 +61,37 @@ FEATURES = {
     "rest_travel": True,         # rest days, bye week, travel      (v1)
     "market": True,              # vegas spread/total (if available) (v1)
 
-    "qb_aggressiveness": False,  # CPOE, air yards                  (v2)
-    "injuries": False,           # injury report weighted count     (v2)
-    "weather": False,            # wind/temp/precip                 (v2)
+    "qb_aggressiveness": True,   # CPOE, air yards                  (v2)
+    "injuries": False,           # injury report weighted count     (v2) -- needs new data source, not yet wired
+    "weather": True,             # wind/temp/dome flag              (v2)
     "pressure_line_play": False, # sack rate proxies                (v2)
 
     "pass_block_win_rate": False,# requires PFF/NGS access           (v3)
     "special_teams_dvoa": False, # requires Football Outsiders data (v3)
     "line_movement": False,      # requires odds API history        (v3)
 }
+
+# Maps each rolling stat column (its base name, before the home_/away_ prefix
+# and _rollN suffix) to the FEATURES flag that gates it. A rolling column with
+# no entry here is always included (e.g. point_margin_roll5, a core signal not
+# tied to any single flag). See train_model.get_feature_columns().
+FEATURE_COLUMN_GROUPS = {
+    "off_epa_per_play": "efficiency",
+    "off_success_rate": "efficiency",
+    "def_epa_per_play_allowed": "efficiency",
+    "def_success_rate_allowed": "efficiency",
+    "turnovers_lost": "turnovers",
+    "turnovers_forced": "turnovers",
+    "qb_epa_per_dropback": "qb_performance",
+    "qb_cpoe": "qb_aggressiveness",
+    "qb_air_yards_per_att": "qb_aggressiveness",
+}
+
+# Weather defaults for indoor/dome/closed-roof games — there's no real
+# weather to record, so these stand in for "climate controlled, a non-factor"
+# rather than leaving NaNs that would otherwise shrink the training set.
+DOME_DEFAULT_TEMP_F = 70
+DOME_DEFAULT_WIND_MPH = 0
 
 # ---------------------------------------------------------------------------
 # GAME TYPE
