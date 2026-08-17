@@ -376,6 +376,8 @@ def build_upcoming_features(season: int = None) -> pd.DataFrame:
     keep_cols = [
         "game_id", "season", "week", "game_type", "gameday",
         "home_team", "away_team", "div_game", "spread_line", "total_line",
+        "home_spread_odds", "away_spread_odds", "home_moneyline", "away_moneyline",
+        "over_odds", "under_odds",
         "is_outdoor", "temp", "wind",
         "home_rest_days", "away_rest_days",
         "home_games_played_this_season", "away_games_played_this_season",
