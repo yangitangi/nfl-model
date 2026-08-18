@@ -49,6 +49,14 @@ NFLVERSE_SCHEDULE_URL = (
     "games.parquet"
 )
 
+# Team colors/logos reference (sibling nflverse repo, not the main
+# nflverse-data releases -- maintained alongside it, same organization).
+# Used only for dashboard display (team logo icons), not model features.
+NFLVERSE_TEAM_LOGOS_URL = (
+    "https://raw.githubusercontent.com/nflverse/nflfastR-data/master/"
+    "teams_colors_logos.csv"
+)
+
 # ---------------------------------------------------------------------------
 # FEATURE FLAGS
 # ---------------------------------------------------------------------------

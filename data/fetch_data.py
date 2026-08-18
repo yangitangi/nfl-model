@@ -137,6 +137,41 @@ def fetch_schedules(force_refresh: bool = False, min_season: int = None,
     return df
 
 
+def fetch_team_logos(force_refresh: bool = False) -> pd.DataFrame:
+    """
+    Fetch team reference data (colors, logo URLs) from a sibling nflverse
+    repo. Display-only -- used by the dashboard for team icons, never fed
+    into the model. Cached the same way as schedules/pbp.
+
+    The source file carries every historical abbreviation a franchise has
+    used (e.g. Rams as both STL and LA/LAR, Raiders as both OAK and LV),
+    which would duplicate each of those teams in a lookup. Filtered down to
+    exactly the current 32 team abbreviations, matching config.TEAM_ABBR_FIXES'
+    convention (LA not LAR/STL, LV not OAK, LAC not SD) so lookups by the
+    team abbreviations already used everywhere else in this project just work.
+    """
+    local_path = config.RAW_DATA_DIR / "team_logos.csv"
+
+    if local_path.exists() and not force_refresh:
+        print(f"  [cache] Team logos already on disk -> {local_path.name}")
+        return pd.read_csv(local_path)
+
+    print("  [download] Team logos from nflverse...")
+    try:
+        response = requests.get(config.NFLVERSE_TEAM_LOGOS_URL, timeout=30)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"  [ERROR] Failed to fetch team logos: {e}")
+        return pd.DataFrame()
+
+    stale_abbrs = ["OAK", "SD", "STL", "LAR"]
+    df = pd.read_csv(pd.io.common.BytesIO(response.content))
+    df = df[~df["team_abbr"].isin(stale_abbrs)].reset_index(drop=True)
+    df.to_csv(local_path, index=False)
+    print(f"  [saved] {len(df)} teams -> {local_path.name}")
+    return df
+
+
 def standardize_team_abbrs(df: pd.DataFrame, team_cols: list[str]) -> pd.DataFrame:
     """
     Applies config.TEAM_ABBR_FIXES to relocated/renamed franchises

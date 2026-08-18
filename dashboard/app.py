@@ -19,6 +19,7 @@ import streamlit as st
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from data.build_features import build_upcoming_features
+from data.fetch_data import fetch_team_logos
 from models.train_model import prepare_data, evaluate
 from models.predict import (
     load_model_artifacts as _load_model_artifacts,
@@ -118,6 +119,11 @@ CARD_CSS = """
 }
 .matchup-title {
     font-size: 1.6rem; font-weight: 800; margin-bottom: 1.1rem; letter-spacing: -0.01em;
+    display: flex; align-items: center;
+}
+.team-logo {
+    width: 26px; height: 26px; object-fit: contain; vertical-align: middle;
+    margin: 0 0.3rem 0 0; border-radius: 4px;
 }
 .team-away { color: var(--away-color); }
 .team-home { color: var(--home-color); }
@@ -191,7 +197,12 @@ def edge_tier(value: float, threshold: float) -> str:
     return "small"
 
 
-def render_game_card(row) -> str:
+def team_logo_img(team: str, team_logos: dict) -> str:
+    url = team_logos.get(team)
+    return f'<img class="team-logo" src="{url}" alt="{team}">' if url else ""
+
+
+def render_game_card(row, team_logos: dict) -> str:
     away_color = TEAM_COLORS.get(row["away_team"], "#5b6478")
     home_color = TEAM_COLORS.get(row["home_team"], "#5b6478")
     div_badge = '<span class="div-badge">Division game</span>' if row["div_game"] else ""
@@ -222,7 +233,7 @@ def render_game_card(row) -> str:
         {div_badge}
       </div>
       <div class="matchup-title">
-        <span class="team-away">{row['away_team']}</span><span class="at-sep">@</span><span class="team-home">{row['home_team']}</span>
+        {team_logo_img(row['away_team'], team_logos)}<span class="team-away">{row['away_team']}</span><span class="at-sep">@</span>{team_logo_img(row['home_team'], team_logos)}<span class="team-home">{row['home_team']}</span>
       </div>
       <div class="stats-grid">
         <div class="stat-col">
@@ -272,6 +283,16 @@ def load_upcoming(season: int):
     return build_upcoming_features(season=season)
 
 
+@st.cache_data(ttl=86400)
+def load_team_logos() -> dict:
+    """team_abbr -> ESPN logo URL. Cached a full day since this almost
+    never changes; display-only, never touches the model."""
+    df = fetch_team_logos()
+    if df.empty:
+        return {}
+    return dict(zip(df["team_abbr"], df["team_logo_espn"]))
+
+
 def predict(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
     return _predict(df, feature_cols)
 
@@ -316,6 +337,7 @@ def main():
 
     predicted = predict(week_games, feature_cols)
     predicted = add_market_edges(predicted)
+    team_logos = load_team_logos()
 
     st.subheader(f"{config.CURRENT_SEASON} Season — Week {WEEK_TO_SHOW}")
 
@@ -332,7 +354,7 @@ def main():
         return
 
     for _, row in view.iterrows():
-        st.markdown(render_game_card(row), unsafe_allow_html=True)
+        st.markdown(render_game_card(row, team_logos), unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
