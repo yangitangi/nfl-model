@@ -31,8 +31,15 @@ ROLLING_STAT_COLS = [
     "def_epa_per_play_allowed", "def_success_rate_allowed",
     "turnovers_lost", "turnovers_forced",
     "qb_epa_per_dropback", "qb_cpoe", "qb_air_yards_per_att",
+    "st_epa_per_play",
     "point_margin",
 ]
+
+# Opponent-adjusted delta columns (see add_opponent_adjusted_features) --
+# derived, not raw per-game stats, but rolled with the exact same
+# shift+rolling math, so they're kept in their own list rather than mixed
+# into ROLLING_STAT_COLS above.
+OPPONENT_ADJUSTED_STAT_COLS = ["off_epa_vs_opp_baseline", "def_epa_allowed_vs_opp_baseline"]
 
 
 def build_team_game_stats(pbp: pd.DataFrame) -> pd.DataFrame:
@@ -84,10 +91,22 @@ def build_team_game_stats(pbp: pd.DataFrame) -> pd.DataFrame:
         qb_air_yards_per_att=("air_yards", "mean"),
     ).reset_index().rename(columns={"posteam": "team"})
 
+    # --- Special teams (punts, kickoffs, field goals, extra points) ---
+    # nflverse computes EPA uniformly across every play type, including
+    # these, so this reuses the exact same methodology as offensive/defensive
+    # EPA above rather than introducing a different metric. posteam on a
+    # special-teams play is the kicking/punting team (the team taking the
+    # action), which is what this attributes the value to.
+    st_plays = pbp[pbp["play_type"].isin(["punt", "kickoff", "field_goal", "extra_point"])]
+    st_stats = st_plays.groupby(["game_id", "posteam"]).agg(
+        st_epa_per_play=("epa", "mean"),
+    ).reset_index().rename(columns={"posteam": "team"})
+
     # --- Combine into one team-game row ---
     team_game = offense.merge(defense, on=["game_id", "team"], how="outer")
     team_game = team_game.merge(turnovers_lost, on=["game_id", "team"], how="left")
     team_game = team_game.merge(qb_stats, on=["game_id", "team"], how="left")
+    team_game = team_game.merge(st_stats, on=["game_id", "team"], how="left")
     team_game["turnovers_lost"] = team_game["turnovers_lost"].fillna(0)
 
     return team_game
@@ -192,6 +211,58 @@ def add_rolling_features(team_game: pd.DataFrame) -> pd.DataFrame:
     return team_game
 
 
+def add_opponent_adjusted_features(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
+    """
+    Approximates the core idea behind DVOA-style ratings -- the same raw
+    numbers mean different things against different opponents -- without
+    DVOA's full iterative simultaneous solve. For each game, this team's
+    RAW (unrolled) offensive EPA/play is compared against the opponent's
+    own entering-game defensive rolling average (their established
+    baseline coming in, already anti-leakage-safe since it's the
+    shift+rolling output of add_rolling_features, which this must run
+    after). Outperforming a good defense's baseline counts for more than
+    matching it against a bad one. Same idea in reverse for defense vs.
+    the opponent's offensive baseline.
+
+    The resulting per-game deltas are then rolled the same way as every
+    other stat (shift+rolling over the last N games) to produce the final
+    opponent-adjusted features -- so a single game's raw performance never
+    leaks into its own adjusted rolling average, same discipline as
+    everywhere else in this pipeline.
+
+    This is a single-pass proxy, not a full iterative DVOA solve -- simpler
+    to reason about and to keep leakage-free, at the cost of not capturing
+    DVOA's opponent-of-opponent convergence effects.
+    """
+    window = config.ROLLING_WINDOW_GAMES
+    min_games = config.MIN_GAMES_FOR_ROLLING
+    roll_suffix = f"_roll{window}"
+
+    opp_baseline = team_game_rolled[[
+        "game_id", "team", f"off_epa_per_play{roll_suffix}", f"def_epa_per_play_allowed{roll_suffix}",
+    ]].rename(columns={
+        "team": "opponent",
+        f"off_epa_per_play{roll_suffix}": "opp_off_epa_baseline",
+        f"def_epa_per_play_allowed{roll_suffix}": "opp_def_epa_baseline",
+    })
+
+    merged = team_game_rolled.merge(opp_baseline, on=["game_id", "opponent"], how="left")
+
+    merged["off_epa_vs_opp_baseline"] = merged["off_epa_per_play"] - merged["opp_def_epa_baseline"]
+    merged["def_epa_allowed_vs_opp_baseline"] = (
+        merged["def_epa_per_play_allowed"] - merged["opp_off_epa_baseline"]
+    )
+
+    merged = merged.sort_values(["team", "gameday"]).reset_index(drop=True)
+    for col in OPPONENT_ADJUSTED_STAT_COLS:
+        merged[f"{col}{roll_suffix}"] = (
+            merged.groupby("team")[col]
+            .transform(lambda s: s.shift(1).rolling(window=window, min_periods=min_games).mean())
+        )
+
+    return merged
+
+
 def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
     """
     Converts the team-game (2 rows per game) table into the final
@@ -262,6 +333,9 @@ def build_feature_table(seasons: list[int] = None, save: bool = True) -> pd.Data
     print("Computing rolling features (no data leakage)...")
     team_game_rolled = add_rolling_features(team_game)
 
+    print("Computing opponent-adjusted features...")
+    team_game_rolled = add_opponent_adjusted_features(team_game_rolled)
+
     print("Assembling final game-level table...")
     game_level = assemble_game_level_table(team_game_rolled)
 
@@ -273,7 +347,7 @@ def build_feature_table(seasons: list[int] = None, save: bool = True) -> pd.Data
     return game_level
 
 
-def compute_team_form_snapshot(team_game: pd.DataFrame) -> pd.DataFrame:
+def compute_team_form_snapshot(team_game: pd.DataFrame, stat_cols: list[str] = None) -> pd.DataFrame:
     """
     One row per team: the rolling stat averages that team carries INTO their
     next (not yet played) game — the mean of their last ROLLING_WINDOW_GAMES
@@ -281,15 +355,21 @@ def compute_team_form_snapshot(team_game: pd.DataFrame) -> pd.DataFrame:
     rolling would produce for a hypothetical next row, since both only ever
     look at prior games. Carries across season boundaries here too, matching
     the training pipeline (team strength doesn't reset to zero on Week 1).
+
+    stat_cols defaults to ROLLING_STAT_COLS (raw per-game stats). Pass
+    OPPONENT_ADJUSTED_STAT_COLS to snapshot those instead -- the tail-mean
+    math is identical either way, it doesn't matter whether the column is a
+    raw stat or a derived one, as long as team_game already has it.
     """
+    stat_cols = ROLLING_STAT_COLS if stat_cols is None else stat_cols
     window = config.ROLLING_WINDOW_GAMES
     roll_suffix = f"_roll{window}"
 
     team_game_sorted = team_game.sort_values(["team", "gameday"])
     snapshot = (
-        team_game_sorted.groupby("team")[ROLLING_STAT_COLS]
+        team_game_sorted.groupby("team")[stat_cols]
         .apply(lambda g: g.tail(window).mean())
-        .rename(columns={c: f"{c}{roll_suffix}" for c in ROLLING_STAT_COLS})
+        .rename(columns={c: f"{c}{roll_suffix}" for c in stat_cols})
         .reset_index()
     )
     return snapshot
@@ -316,6 +396,8 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     window = config.ROLLING_WINDOW_GAMES
     roll_suffix = f"_roll{window}"
     snapshot_cols = [f"{c}{roll_suffix}" for c in ROLLING_STAT_COLS]
+    adj_snapshot_cols = [f"{c}{roll_suffix}" for c in OPPONENT_ADJUSTED_STAT_COLS]
+    all_snapshot_cols = snapshot_cols + adj_snapshot_cols
 
     print("Loading raw data...")
     pbp = fetch_all_seasons()
@@ -341,9 +423,17 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     team_game = build_team_game_stats(pbp)
     team_game = attach_opponent_and_turnovers_forced(team_game)
     team_game = add_schedule_context(team_game, played)
+    # Opponent-adjusted features need each team's entering-game rolling
+    # baseline to compare opponents against, so the first-pass rolling has
+    # to run here too even though the historical rolling *table* itself
+    # isn't otherwise needed for the upcoming-game snapshot.
+    team_game_rolled = add_rolling_features(team_game)
+    team_game_rolled = add_opponent_adjusted_features(team_game_rolled)
 
     print(f"Computing team form snapshots (last {window} games played)...")
-    snapshot = compute_team_form_snapshot(team_game)
+    snapshot = compute_team_form_snapshot(team_game_rolled, ROLLING_STAT_COLS)
+    snapshot_adj = compute_team_form_snapshot(team_game_rolled, OPPONENT_ADJUSTED_STAT_COLS)
+    snapshot = snapshot.merge(snapshot_adj, on="team")
 
     # Weather fill for upcoming games: forecasts don't exist this far out, so
     # temp/wind are ~always NaN even for outdoor stadiums (unlike training
@@ -362,10 +452,10 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
 
     print(f"Building feature rows for {len(upcoming):,} upcoming games...")
     home_snapshot = snapshot.rename(
-        columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in snapshot_cols}}
+        columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in all_snapshot_cols}}
     )
     away_snapshot = snapshot.rename(
-        columns={**{"team": "away_team"}, **{c: f"away_{c}" for c in snapshot_cols}}
+        columns={**{"team": "away_team"}, **{c: f"away_{c}" for c in all_snapshot_cols}}
     )
 
     game_level = upcoming.merge(home_snapshot, on="home_team", how="left")
@@ -386,7 +476,7 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
         "is_outdoor", "temp", "wind",
         "home_rest_days", "away_rest_days",
         "home_games_played_this_season", "away_games_played_this_season",
-    ] + [f"home_{c}" for c in snapshot_cols] + [f"away_{c}" for c in snapshot_cols]
+    ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
     game_level = game_level[keep_cols].copy()
     game_level["gameday"] = pd.to_datetime(game_level["gameday"])

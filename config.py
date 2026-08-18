@@ -66,8 +66,12 @@ FEATURES = {
     "weather": True,             # wind/temp/dome flag              (v2)
     "pressure_line_play": False, # sack rate proxies                (v2)
 
+    "special_teams": False,      # EPA/play on ST snaps, own data    (v2.5) -- our own metric, see special_teams_dvoa below
+    "opponent_adjusted_efficiency": False,  # single-pass opponent-adjustment proxy (v2.5)
+
     "pass_block_win_rate": False,# requires PFF/NGS access           (v3)
-    "special_teams_dvoa": False, # requires Football Outsiders data (v3)
+    "special_teams_dvoa": False, # requires real Football Outsiders/FTN data -- distinct from
+                                  # "special_teams" above, which is our own EPA-based proxy   (v3)
     "line_movement": False,      # requires odds API history        (v3)
 }
 
@@ -85,6 +89,9 @@ FEATURE_COLUMN_GROUPS = {
     "qb_epa_per_dropback": "qb_performance",
     "qb_cpoe": "qb_aggressiveness",
     "qb_air_yards_per_att": "qb_aggressiveness",
+    "st_epa_per_play": "special_teams",
+    "off_epa_vs_opp_baseline": "opponent_adjusted_efficiency",
+    "def_epa_allowed_vs_opp_baseline": "opponent_adjusted_efficiency",
 }
 
 # Weather defaults for indoor/dome/closed-roof games — there's no real
