@@ -62,11 +62,11 @@ TEAM_COLORS = {
 CARD_CSS = """
 <style>
 .stApp {
-    background: radial-gradient(circle at top left, #16213a 0%, #0b0f19 55%, #0a0d15 100%);
+    background: radial-gradient(circle at top left, #2a3b66 0%, #202c48 55%, #1c2438 100%);
 }
 .hero-box {
-    background: linear-gradient(135deg, #1b2333 0%, #171f2e 100%);
-    border: 1px solid rgba(255,255,255,0.06);
+    background: linear-gradient(135deg, #2a3552 0%, #242e48 100%);
+    border: 1px solid rgba(255,255,255,0.09);
     border-radius: 16px;
     padding: 1.3rem 1.6rem 1.4rem 1.6rem;
     margin-bottom: 1.2rem;
@@ -79,7 +79,7 @@ CARD_CSS = """
 }
 @media (max-width: 700px) { .hero-grid { grid-template-columns: repeat(2, 1fr); } }
 .hero-stat {
-    background: rgba(255,255,255,0.04); border-radius: 12px; padding: 0.85rem 1rem;
+    background: rgba(255,255,255,0.07); border-radius: 12px; padding: 0.85rem 1rem;
 }
 .hero-label {
     font-size: 0.72rem; color: #8a93a6; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem;
@@ -88,9 +88,9 @@ CARD_CSS = """
 .hero-value.accent { color: #3ac982; }
 .hero-caption { font-size: 0.82rem; color: #8a93a6; line-height: 1.5; }
 .game-card {
-    background: linear-gradient(135deg, #1b2333 0%, #161d2c 100%);
+    background: linear-gradient(135deg, #2a3552 0%, #232d46 100%);
     border-radius: 16px;
-    border: 1px solid rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.09);
     padding: 1.25rem 1.5rem 1rem 1.5rem;
     margin-bottom: 1.1rem;
     box-shadow: 0 4px 14px rgba(0,0,0,0.25);
@@ -115,7 +115,7 @@ CARD_CSS = """
     margin-bottom: 0.5rem;
 }
 .div-badge {
-    background: rgba(255,255,255,0.08); padding: 2px 10px; border-radius: 999px; font-size: 0.68rem;
+    background: rgba(255,255,255,0.11); padding: 2px 10px; border-radius: 999px; font-size: 0.68rem;
 }
 .matchup-title {
     font-size: 1.6rem; font-weight: 800; margin-bottom: 1.1rem; letter-spacing: -0.01em;
@@ -141,7 +141,7 @@ CARD_CSS = """
 .pred-spread { font-size: 1.25rem; font-weight: 800; color: #f2f4f8; margin-bottom: 0.55rem; }
 .win-bar-wrap { display: flex; align-items: center; gap: 0.5rem; }
 .win-bar {
-    flex: 1; height: 9px; border-radius: 6px; background: rgba(255,255,255,0.08);
+    flex: 1; height: 9px; border-radius: 6px; background: rgba(255,255,255,0.11);
     overflow: hidden; display: flex;
 }
 .win-bar-home { background: linear-gradient(90deg, #23a866, #3ac982); height: 100%; }
@@ -154,8 +154,8 @@ CARD_CSS = """
 .edge-medium { background: rgba(255, 176, 32, 0.16); color: #ffb020; }
 .edge-large { background: rgba(255, 82, 82, 0.17); color: #ff6b6b; }
 .game-footer {
-    margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid rgba(255,255,255,0.06);
-    font-size: 0.76rem; color: #7d8598;
+    margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid rgba(255,255,255,0.09);
+    font-size: 0.76rem; color: #8892a8;
 }
 </style>
 """
