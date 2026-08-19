@@ -493,6 +493,124 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     return game_level
 
 
+def build_playoff_features(season: int = None) -> pd.DataFrame:
+    """
+    Builds a game-level feature row for each ALREADY-PLAYED playoff game in
+    `season` -- for retrospective backtesting, not live prediction (see
+    build_upcoming_features for that).
+
+    Every playoff game for a team uses the SAME entering-form snapshot:
+    their rolling stats as of the end of that team's regular season.
+    Playoff games never update this snapshot (a divisional-round opponent
+    doesn't get a "boosted" snapshot from winning their wild-card game) --
+    deliberately, since the deployed model was itself trained with playoffs
+    entirely excluded from every team's rolling history
+    (config.INCLUDE_PLAYOFFS=False). Scoring playoff games any other way
+    would feed the model a kind of rolling signal (playoff-influenced form)
+    it never saw in training.
+
+    Unlike build_upcoming_features, market lines and weather here are REAL
+    (these games already happened, so there's no forecast-fallback need),
+    and actual_margin/actual_winner are populated since the outcome is
+    known -- this is for grading the model against history, not predicting
+    the future.
+    """
+    season = config.CURRENT_SEASON if season is None else season
+    window = config.ROLLING_WINDOW_GAMES
+    roll_suffix = f"_roll{window}"
+    snapshot_cols = [f"{c}{roll_suffix}" for c in ROLLING_STAT_COLS]
+    adj_snapshot_cols = [f"{c}{roll_suffix}" for c in OPPONENT_ADJUSTED_STAT_COLS]
+    all_snapshot_cols = snapshot_cols + adj_snapshot_cols
+
+    print("Loading raw data...")
+    pbp = fetch_all_seasons()
+    pbp = standardize_team_abbrs(pbp, ["home_team", "away_team", "posteam", "defteam"])
+
+    schedules = fetch_schedules(max_season=season)
+    schedules = standardize_team_abbrs(schedules, ["home_team", "away_team"])
+
+    played_reg = schedules[(schedules["game_type"] == "REG") & (schedules["home_score"].notna())]
+    playoff_games = schedules[
+        (schedules["season"] == season) & (schedules["game_type"] != "REG")
+        & (schedules["home_score"].notna())
+    ].copy()
+
+    if playoff_games.empty:
+        print(f"No played playoff games found for season {season}.")
+        return pd.DataFrame()
+
+    print("Aggregating historical (regular-season-only) plays to team-game level...")
+    team_game = build_team_game_stats(pbp)
+    team_game = attach_opponent_and_turnovers_forced(team_game)
+    team_game = add_schedule_context(team_game, played_reg)
+    team_game_rolled = add_rolling_features(team_game)
+    team_game_rolled = add_opponent_adjusted_features(team_game_rolled)
+
+    print(f"Computing end-of-regular-season form snapshots for {season}...")
+    snapshot = compute_team_form_snapshot(team_game_rolled, ROLLING_STAT_COLS)
+    snapshot_adj = compute_team_form_snapshot(team_game_rolled, OPPONENT_ADJUSTED_STAT_COLS)
+    snapshot = snapshot.merge(snapshot_adj, on="team")
+
+    games_played = (
+        team_game_rolled.loc[team_game_rolled["season"] == season]
+        .groupby("team")["games_played_this_season"].max() + 1
+    ).rename("games_played_entering_playoffs").reset_index()
+
+    # Weather is real here (these games already happened) -- the same
+    # is_outdoor/dome-default treatment as everywhere else, but the outdoor
+    # median fallback should essentially never trigger since real readings
+    # already exist for played games (unlike future/upcoming games).
+    is_outdoor_hist = played_reg["roof"].isin(["outdoors", "open"])
+    outdoor_temp_median = played_reg.loc[is_outdoor_hist, "temp"].median()
+    outdoor_wind_median = played_reg.loc[is_outdoor_hist, "wind"].median()
+
+    playoff_games["is_outdoor"] = playoff_games["roof"].isin(["outdoors", "open"]).astype(int)
+    outdoor_mask = playoff_games["is_outdoor"] == 1
+    playoff_games["temp"] = np.where(
+        outdoor_mask, playoff_games["temp"].fillna(outdoor_temp_median), config.DOME_DEFAULT_TEMP_F)
+    playoff_games["wind"] = np.where(
+        outdoor_mask, playoff_games["wind"].fillna(outdoor_wind_median), config.DOME_DEFAULT_WIND_MPH)
+
+    home_snapshot = snapshot.rename(
+        columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in all_snapshot_cols}})
+    away_snapshot = snapshot.rename(
+        columns={**{"team": "away_team"}, **{c: f"away_{c}" for c in all_snapshot_cols}})
+
+    game_level = playoff_games.merge(home_snapshot, on="home_team", how="left")
+    game_level = game_level.merge(away_snapshot, on="away_team", how="left")
+
+    game_level = game_level.merge(
+        games_played.rename(columns={"team": "home_team",
+                                      "games_played_entering_playoffs": "home_games_played_this_season"}),
+        on="home_team", how="left")
+    game_level = game_level.merge(
+        games_played.rename(columns={"team": "away_team",
+                                      "games_played_entering_playoffs": "away_games_played_this_season"}),
+        on="away_team", how="left")
+
+    game_level["home_rest_days"] = game_level["home_rest"]
+    game_level["away_rest_days"] = game_level["away_rest"]
+    game_level["actual_margin"] = game_level["home_score"] - game_level["away_score"]
+    game_level["actual_winner"] = np.where(game_level["actual_margin"] > 0, "home", "away")
+
+    keep_cols = [
+        "game_id", "season", "week", "game_type", "gameday",
+        "home_team", "away_team", "div_game", "spread_line", "total_line",
+        "home_spread_odds", "away_spread_odds", "home_moneyline", "away_moneyline",
+        "over_odds", "under_odds",
+        "is_outdoor", "temp", "wind",
+        "home_rest_days", "away_rest_days",
+        "home_games_played_this_season", "away_games_played_this_season",
+        "home_score", "away_score", "actual_margin", "actual_winner",
+    ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
+
+    game_level = game_level[keep_cols].copy()
+    game_level["gameday"] = pd.to_datetime(game_level["gameday"])
+    game_level = game_level.sort_values(["week", "gameday"]).reset_index(drop=True)
+
+    return game_level
+
+
 if __name__ == "__main__":
     print(f"=== Building Features: {config.START_SEASON}-{config.END_SEASON} ===\n")
     df = build_feature_table()
