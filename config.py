@@ -138,7 +138,35 @@ RANDOM_SEED = 42
 # FEATURES["market"] on; missing spread_line at prediction time (a future
 # game with no line posted yet) falls back to a 0-point offset (pick'em
 # prior) rather than leaving the prediction undefined.
-MARGIN_TARGET_MODE = "residual"   # "raw" or "residual"
+# "blend": the model is trained the same way as "raw" (predicts actual_margin
+# from scratch -- spread_line is still available to it as an input feature,
+# just not force-added back afterward), then the final prediction is a
+# weighted average of that raw prediction and the market spread:
+#   MARKET_BLEND_WEIGHT * spread_line + (1 - MARKET_BLEND_WEIGHT) * raw_pred
+# This is the technique nfelo (a well-regarded public NFL model) reports
+# using. IMPORTANT, found via models/tune_blend_weight.py: when the number
+# you blend toward is the SAME number you grade ATS against (true here --
+# we only have one spread_line per historical game), blending is
+# mathematically incapable of changing which side of the spread you land
+# on -- algebraically, blended - spread_line = (1-w)*(raw_pred - spread_line),
+# which never changes sign for any w<1. It only shrinks margin error (MAE),
+# confirmed empirically: identical ATS hit rate across the entire weight
+# grid 0.00-0.95 on 4 walk-forward validation seasons, only MAE moved. So
+# this mode is NOT a fix for ATS performance specifically, only for margin
+# accuracy -- kept "residual" as the default for that reason. Blending
+# would only help ATS if the market number blended toward differs from the
+# one graded against (e.g. opening line blended, closing line graded) --
+# that needs real opening/closing data, which is what
+# tracking/line_movement_tracker.py starts collecting for the 2026 season.
+MARGIN_TARGET_MODE = "residual"   # "raw", "residual", or "blend"
+
+# Weight given to the market spread in "blend" mode; (1 - this) goes to the
+# model's own raw prediction. Tuned via walk-forward validation across
+# multiple training seasons (see models/tune_blend_weight.py) -- not on the
+# final holdout season, which would leak. nfelo reported ~0.65 as their own
+# fitted value; ours may differ since it depends on this model's own
+# raw-mode accuracy relative to the market, not nfelo's.
+MARKET_BLEND_WEIGHT = 0.65
 
 # ---------------------------------------------------------------------------
 # PLAY-BY-PLAY COLUMN SELECTION

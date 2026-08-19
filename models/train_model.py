@@ -111,13 +111,27 @@ def get_margin_target(df: pd.DataFrame) -> np.ndarray:
 def reconstruct_margin(df: pd.DataFrame, raw_pred: np.ndarray) -> np.ndarray:
     """
     Converts the model's raw output back to an actual-margin-scale
-    prediction. In "residual" mode, adds the market line back; a missing
-    spread_line (a future game with no line posted yet) falls back to a
-    0-point offset rather than leaving the prediction undefined.
+    prediction.
+
+    "residual": adds the market line back; a missing spread_line (a future
+    game with no line posted yet) falls back to a 0-point offset rather
+    than leaving the prediction undefined.
+
+    "blend": a weighted average of the raw prediction and the market line
+    (config.MARKET_BLEND_WEIGHT on the market side). A missing spread_line
+    falls back to the raw prediction alone (market weight 0 for that game),
+    same "don't leave it undefined" principle as residual mode.
     """
     if config.MARGIN_TARGET_MODE == "residual":
         offset = df["spread_line"].fillna(0).values
         return raw_pred + offset
+    if config.MARGIN_TARGET_MODE == "blend":
+        spread = df["spread_line"].values.astype(float)
+        w = config.MARKET_BLEND_WEIGHT
+        has_spread = ~np.isnan(spread)
+        blended = raw_pred.copy()
+        blended[has_spread] = w * spread[has_spread] + (1 - w) * raw_pred[has_spread]
+        return blended
     return raw_pred
 
 
