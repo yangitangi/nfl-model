@@ -75,6 +75,7 @@ def xgboost_predictions() -> pd.DataFrame:
         model = train_margin_model(train, feature_cols)
         pred = reconstruct_margin(val, model.predict(val[feature_cols]))
         rows.append(pd.DataFrame({
+            "game_id": val["game_id"].values,
             "season": y, "pred_margin": pred,
             "spread_line": val["spread_line"].values,
             "actual_margin": val["actual_margin"].values,
@@ -141,6 +142,7 @@ def weighted_form_predictions(half_life_days: int = 365) -> pd.DataFrame:
         hfa = (train["actual_margin"] - train["pred_margin_raw"]).mean()  # fit HFA on training folds only
         pred = val["pred_margin_raw"].values + hfa
         rows.append(pd.DataFrame({
+            "game_id": val["game_id"].values,
             "season": y, "pred_margin": pred,
             "spread_line": val["spread_line"].values,
             "actual_margin": val["actual_margin"].values,
@@ -191,13 +193,64 @@ def elo_predictions() -> pd.DataFrame:
         ratings[away] = get(away) - shift
 
         rows.append({
-            "season": g["season"], "pred_margin": pred_margin,
+            "game_id": g["game_id"], "season": g["season"], "pred_margin": pred_margin,
             "spread_line": g["spread_line"], "actual_margin": actual_margin,
             "home_win": int(actual_margin > 0),
         })
 
     all_preds = pd.DataFrame(rows)
     return all_preds[all_preds["season"].isin(EVAL_SEASONS)].reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Ensemble: does averaging with the simple models beat XGBoost alone?
+# ---------------------------------------------------------------------------
+def build_ensemble_frame(xgb_preds: pd.DataFrame, form_preds: pd.DataFrame, elo_preds: pd.DataFrame) -> pd.DataFrame:
+    """Merges all three models' predictions by game_id -- NOT by row
+    position, which isn't guaranteed to align across three independently
+    built dataframes even when the row counts happen to match."""
+    x = xgb_preds[["game_id", "season", "spread_line", "actual_margin", "home_win", "pred_margin"]].rename(
+        columns={"pred_margin": "pred_xgb"})
+    f = form_preds[["game_id", "pred_margin"]].rename(columns={"pred_margin": "pred_form"})
+    e = elo_preds[["game_id", "pred_margin"]].rename(columns={"pred_margin": "pred_elo"})
+    merged = x.merge(f, on="game_id", how="inner").merge(e, on="game_id", how="inner")
+    return merged
+
+
+def test_ensembles(merged: pd.DataFrame):
+    """
+    Grid search over ensemble weights on the full 2021-2025 panel. This is
+    exploratory/diagnostic -- if any combination looked worth adopting, the
+    weight itself would need tuning on separate validation data before
+    trusting it for real, same leakage discipline as
+    models/tune_blend_weight.py. The point here is just: is there ANY
+    weighting where the simple models add something XGBoost alone doesn't
+    have, or does XGBoost's individual strength just get diluted?
+    """
+    combos = [("XGBoost only", 1.0, 0.0, 0.0)]
+    for w_xgb in [0.9, 0.8, 0.7, 0.6, 0.5]:
+        remainder = 1.0 - w_xgb
+        combos.append((f"XGB {w_xgb:.0%} / Elo {remainder:.0%}", w_xgb, 0.0, remainder))
+        combos.append((f"XGB {w_xgb:.0%} / Form {remainder:.0%}", w_xgb, remainder, 0.0))
+        combos.append((f"XGB {w_xgb:.0%} / Elo {remainder/2:.0%} / Form {remainder/2:.0%}",
+                        w_xgb, remainder / 2, remainder / 2))
+    combos.append(("Equal 3-way average", 1 / 3, 1 / 3, 1 / 3))
+
+    print(f"\n{'Ensemble':<34}{'MAE':<8}{'WinAcc':<10}{'ATS':<8}")
+    print("-" * 60)
+    results = []
+    for name, w_xgb, w_form, w_elo in combos:
+        pred = (w_xgb * merged["pred_xgb"] + w_form * merged["pred_form"] + w_elo * merged["pred_elo"]).values
+        r = grade(pred, merged["spread_line"].values, merged["actual_margin"].values, merged["home_win"].values)
+        results.append((name, r))
+        print(f"{name:<34}{r['mae']:<8.2f}{r['win_acc']:<10.1%}{r['ats']:<8.1%}")
+
+    best_mae = min(results, key=lambda t: t[1]["mae"])
+    best_winacc = max(results, key=lambda t: t[1]["win_acc"])
+    best_ats = max(results, key=lambda t: t[1]["ats"])
+    print(f"\nBest MAE:    {best_mae[0]}  ({best_mae[1]['mae']:.2f})")
+    print(f"Best WinAcc: {best_winacc[0]}  ({best_winacc[1]['win_acc']:.1%})")
+    print(f"Best ATS:    {best_ats[0]}  ({best_ats[1]['ats']:.1%})")
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +301,14 @@ def main():
     print(f"\n{'Model':<16}{'MAE':<8}{'WinAcc':<10}{'ATS':<8}")
     for name, r in results.items():
         print(f"{name:<16}{r['mae']:<8.2f}{r['win_acc']:<10.1%}{r['ats']:<8.1%}")
+
+    print("\n\n" + "=" * 70)
+    print("ENSEMBLE TEST: does blending in the simple models beat XGBoost alone?")
+    print("=" * 70)
+    merged = build_ensemble_frame(xgb_preds, form_preds, elo_preds)
+    print(f"Matched {len(merged):,} games across all three models by game_id "
+          f"(of {len(xgb_preds):,} XGBoost predictions)")
+    test_ensembles(merged)
 
 
 if __name__ == "__main__":
