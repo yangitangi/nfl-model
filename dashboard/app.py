@@ -144,8 +144,14 @@ CARD_CSS = """
     flex: 1; height: 9px; border-radius: 6px; background: rgba(255,255,255,0.11);
     overflow: hidden; display: flex;
 }
-.win-bar-home { background: linear-gradient(90deg, #23a866, #3ac982); height: 100%; }
+/* Two segments so each team's fill LENGTH matches its own percentage --
+   away on the left (under the away label), home on the right, split at
+   the actual probability boundary. Colored by each team's own accent so
+   it's unambiguous which segment belongs to which label. */
+.win-bar-seg-away { background: var(--away-color); height: 100%; }
+.win-bar-seg-home { background: var(--home-color); height: 100%; }
 .win-pct { font-size: 0.76rem; color: #9aa2b6; white-space: nowrap; }
+.market-compare { font-size: 0.76rem; color: #6d7690; margin-top: 0.4rem; }
 .edge-badge {
     display: inline-block; padding: 3px 11px; border-radius: 999px;
     font-weight: 700; font-size: 0.82rem;
@@ -217,11 +223,13 @@ def render_game_card(row, team_logos: dict) -> str:
         ml_lean = row["home_team"] if row["ml_edge"] > 0 else row["away_team"]
         ml_badge = (f'<span class="edge-badge edge-{ml_tier}">'
                      f'{row["ml_edge"]:+.1%} &middot; {ml_lean}</span>')
-        fair_line = (f'<div class="stat-line sub">Fair market: {row["home_team"]} '
-                     f'{row["fair_home_ml_prob"]:.0%}</div>')
+        market_home_pct = row["fair_home_ml_prob"] * 100
+        market_away_pct = 100 - market_home_pct
+        market_line = (f'<div class="market-compare">Market (fair): {row["away_team"]} '
+                        f'{market_away_pct:.0f}% / {row["home_team"]} {market_home_pct:.0f}%</div>')
     else:
         ml_badge = '<span class="edge-badge">n/a</span>'
-        fair_line = ""
+        market_line = '<div class="market-compare">Market (fair): n/a</div>'
 
     home_pct = row["pred_home_win_prob"] * 100
     away_pct = 100 - home_pct
@@ -249,15 +257,18 @@ def render_game_card(row, team_logos: dict) -> str:
           <div class="pred-spread">{format_spread(row['home_team'], row['away_team'], row['pred_margin'])}</div>
           <div class="win-bar-wrap">
             <span class="win-pct">{row['away_team']} {away_pct:.0f}%</span>
-            <div class="win-bar"><div class="win-bar-home" style="width:{home_pct:.1f}%;"></div></div>
+            <div class="win-bar">
+              <div class="win-bar-seg-away" style="width:{away_pct:.1f}%;"></div>
+              <div class="win-bar-seg-home" style="width:{home_pct:.1f}%;"></div>
+            </div>
             <span class="win-pct">{row['home_team']} {home_pct:.0f}%</span>
           </div>
+          {market_line}
         </div>
         <div class="stat-col">
           <div class="col-title">EDGE (MODEL &minus; MARKET)</div>
           <div class="stat-line">Spread: {spread_badge}</div>
           <div class="stat-line">Moneyline: {ml_badge}</div>
-          {fair_line}
         </div>
       </div>
       <div class="game-footer">{format_weather(row)} &middot; Rest: {row['home_team']} {row['home_rest_days']}d / {row['away_team']} {row['away_rest_days']}d</div>
