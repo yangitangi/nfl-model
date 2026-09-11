@@ -61,11 +61,48 @@ LOG_COLUMNS = [
     "graded_at", "actual_home_score", "actual_away_score", "actual_margin", "actual_winner",
 ]
 
+# A separate, human-readable weekly results file -- prediction_log.parquet
+# is the full internal record (open/close lines, edges, etc.); this is the
+# "just show me who we got right" view: winner (moneyline) and spread (ATS)
+# correctness kept as two DISTINCT columns, since a model can get one right
+# and the other wrong (e.g. Week 1 SEA/NE: predicted SEA to win -- correct,
+# SEA won -- but predicted SEA to cover -3.5 -- wrong, SEA won by only 3).
+WEEKLY_RESULTS_PATH = config.OUTPUTS_DIR / "weekly_results.csv"
+
+WEEKLY_RESULTS_COLUMNS = [
+    "game_id", "season", "week", "gameday", "away_team", "home_team",
+    "pred_margin", "pred_home_win_prob",
+    "vegas_spread_line", "vegas_home_moneyline", "vegas_away_moneyline",
+    "actual_home_score", "actual_away_score", "actual_margin", "actual_winner",
+    "winner_correct", "spread_correct", "graded_at",
+]
+
 
 def _load_log() -> pd.DataFrame:
     if LOG_PATH.exists():
         return pd.read_parquet(LOG_PATH)
     return pd.DataFrame(columns=LOG_COLUMNS)
+
+
+def _load_weekly_results() -> pd.DataFrame:
+    if WEEKLY_RESULTS_PATH.exists():
+        return pd.read_csv(WEEKLY_RESULTS_PATH)
+    return pd.DataFrame(columns=WEEKLY_RESULTS_COLUMNS)
+
+
+def _append_weekly_results(rows: pd.DataFrame):
+    """Appends new graded games, skipping any game_id already recorded
+    (safe to call repeatedly, same idempotency as the rest of this script)."""
+    if rows.empty:
+        return
+    existing = _load_weekly_results()
+    if not existing.empty:
+        rows = rows[~rows["game_id"].isin(existing["game_id"])]
+    if rows.empty:
+        return
+    combined = pd.concat([existing, rows], ignore_index=True)
+    combined.to_csv(WEEKLY_RESULTS_PATH, index=False)
+    print(f"[saved] {len(rows)} game(s) -> {WEEKLY_RESULTS_PATH}")
 
 
 def _save_log(df: pd.DataFrame):
@@ -198,6 +235,7 @@ def update_results(season: int, week: int):
     schedules = schedules[(schedules["season"] == season) & (schedules["week"] == week)]
 
     graded_n = 0
+    weekly_rows = []
     for idx in log[mask].index:
         match = schedules[schedules["game_id"] == log.at[idx, "game_id"]]
         if match.empty:
@@ -207,16 +245,43 @@ def update_results(season: int, week: int):
             continue  # not final yet
 
         home_score, away_score = m["home_score"], m["away_score"]
+        actual_margin = home_score - away_score
+        actual_winner = "home" if home_score > away_score else "away" if away_score > home_score else "tie"
+        now = _now()
+
         log.at[idx, "actual_home_score"] = home_score
         log.at[idx, "actual_away_score"] = away_score
-        log.at[idx, "actual_margin"] = home_score - away_score
-        log.at[idx, "actual_winner"] = (
-            "home" if home_score > away_score else "away" if away_score > home_score else "tie"
-        )
-        log.at[idx, "graded_at"] = _now()
+        log.at[idx, "actual_margin"] = actual_margin
+        log.at[idx, "actual_winner"] = actual_winner
+        log.at[idx, "graded_at"] = now
         graded_n += 1
 
+        pred_margin = log.at[idx, "pred_margin"]
+        spread_line = log.at[idx, "open_spread_line"]
+        winner_correct = (pred_margin > 0 and actual_winner == "home") or \
+                          (pred_margin < 0 and actual_winner == "away")
+        spread_correct = None
+        if pd.notna(spread_line):
+            covered_home = (actual_margin - spread_line) > 0
+            leans_home = (pred_margin - spread_line) > 0
+            spread_correct = bool(covered_home) if leans_home else not bool(covered_home)
+
+        weekly_rows.append({
+            "game_id": log.at[idx, "game_id"], "season": season, "week": week,
+            "gameday": log.at[idx, "gameday"],
+            "away_team": log.at[idx, "away_team"], "home_team": log.at[idx, "home_team"],
+            "pred_margin": pred_margin, "pred_home_win_prob": log.at[idx, "pred_home_win_prob"],
+            "vegas_spread_line": spread_line,
+            "vegas_home_moneyline": log.at[idx, "open_home_moneyline"],
+            "vegas_away_moneyline": log.at[idx, "open_away_moneyline"],
+            "actual_home_score": home_score, "actual_away_score": away_score,
+            "actual_margin": actual_margin, "actual_winner": actual_winner,
+            "winner_correct": winner_correct, "spread_correct": spread_correct,
+            "graded_at": now,
+        })
+
     _save_log(log)
+    _append_weekly_results(pd.DataFrame(weekly_rows))
     remaining = int(mask.sum()) - graded_n
     print(f"Graded {graded_n} Week {week} game(s).")
     if remaining:

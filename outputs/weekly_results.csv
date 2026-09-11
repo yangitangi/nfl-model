@@ -1,0 +1,2 @@
+game_id,season,week,gameday,away_team,home_team,pred_margin,pred_home_win_prob,vegas_spread_line,vegas_home_moneyline,vegas_away_moneyline,actual_home_score,actual_away_score,actual_margin,actual_winner,winner_correct,spread_correct,graded_at
+2026_01_NE_SEA,2026,1,2026-09-09 00:00:00,NE,SEA,4.960371613502502,0.6973717577873509,3.5,-185.0,154.0,13.0,10.0,3.0,home,True,False,2026-09-10 23:59:12.618362+00:00
