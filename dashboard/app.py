@@ -13,13 +13,14 @@ Run with:
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from data.build_features import build_upcoming_features
-from data.fetch_data import fetch_team_logos
+from data.fetch_data import fetch_team_logos, fetch_schedules, standardize_team_abbrs
 from models.train_model import prepare_data, evaluate
 from models.predict import (
     load_model_artifacts as _load_model_artifacts,
@@ -162,6 +163,10 @@ CARD_CSS = """
 .edge-small { background: rgba(58, 201, 130, 0.15); color: #3ac982; }
 .edge-medium { background: rgba(255, 176, 32, 0.16); color: #ffb020; }
 .edge-large { background: rgba(255, 82, 82, 0.17); color: #ff6b6b; }
+.result-correct { background: rgba(58, 201, 130, 0.15); color: #3ac982; }
+.result-wrong { background: rgba(255, 82, 82, 0.17); color: #ff6b6b; }
+.final-score { font-size: 1.25rem; font-weight: 800; color: #f2f4f8; margin-bottom: 0.55rem; }
+.section-divider { margin: 2.2rem 0 1rem 0; border-top: 1px solid rgba(255,255,255,0.14); padding-top: 1.4rem; }
 .game-footer {
     margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid rgba(255,255,255,0.09);
     font-size: 0.76rem; color: #8892a8;
@@ -282,6 +287,70 @@ def render_game_card(row, team_logos: dict) -> str:
     """
 
 
+def render_result_card(row, team_logos: dict) -> str:
+    """Card for an already-played game: the frozen (open-line) prediction
+    from prediction_log.parquet next to the actual result, with the two
+    correctness calls kept as separate badges -- a model can get the
+    winner right while missing the spread call, or vice versa."""
+    away_color = TEAM_COLORS.get(row["away_team"], "#5b6478")
+    home_color = TEAM_COLORS.get(row["home_team"], "#5b6478")
+    div_badge = '<span class="div-badge">Division game</span>' if row["div_game"] else ""
+
+    home_pct = row["pred_home_win_prob"] * 100
+    away_pct = 100 - home_pct
+
+    def badge(correct) -> str:
+        if correct is None:
+            return '<span class="edge-badge">n/a</span>'
+        cls = "result-correct" if correct else "result-wrong"
+        label = "Correct" if correct else "Wrong"
+        return f'<span class="edge-badge {cls}">{label}</span>'
+
+    winner_badge = badge(bool(row["winner_correct"]))
+    spread_badge = badge(None if row["spread_correct"] is None else bool(row["spread_correct"]))
+
+    final_score = (f"{row['away_team']} {row['away_score']:.0f} &ndash; "
+                   f"{row['home_team']} {row['home_score']:.0f}")
+
+    return f"""
+    <div class="game-card" style="--away-color:{away_color}; --home-color:{home_color};">
+      <div class="game-meta">
+        <span>{row['gameday'].strftime('%a %b %d, %Y')} &middot; FINAL</span>
+        {div_badge}
+      </div>
+      <div class="matchup-title">
+        {team_logo_img(row['away_team'], team_logos)}<span class="team-away">{row['away_team']}</span><span class="at-sep">@</span>{team_logo_img(row['home_team'], team_logos)}<span class="team-home">{row['home_team']}</span>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-col">
+          <div class="col-title">VEGAS MARKET (OPEN)</div>
+          <div class="stat-line">Spread: <b>{format_spread(row['home_team'], row['away_team'], row['open_spread_line'])}</b></div>
+          <div class="stat-line">ML: <b>{row['home_team']} {format_ml(row['open_home_moneyline'])}</b> / {row['away_team']} {format_ml(row['open_away_moneyline'])}</div>
+          <div class="stat-line">Total: <b>{row['open_total_line']:.1f}</b></div>
+        </div>
+        <div class="stat-col">
+          <div class="col-title">OUR MODEL (PREDICTED)</div>
+          <div class="pred-spread">{format_spread(row['home_team'], row['away_team'], row['pred_margin'])}</div>
+          <div class="win-bar-wrap">
+            <span class="win-pct">{row['away_team']} {away_pct:.0f}%</span>
+            <div class="win-bar">
+              <div class="win-bar-seg-away" style="width:{away_pct:.1f}%;"></div>
+              <div class="win-bar-seg-home" style="width:{home_pct:.1f}%;"></div>
+            </div>
+            <span class="win-pct">{row['home_team']} {home_pct:.0f}%</span>
+          </div>
+        </div>
+        <div class="stat-col">
+          <div class="col-title">RESULT</div>
+          <div class="final-score">{final_score}</div>
+          <div class="stat-line">Winner call: {winner_badge}</div>
+          <div class="stat-line">Spread call: {spread_badge}</div>
+        </div>
+      </div>
+    </div>
+    """
+
+
 @st.cache_resource
 def load_model_artifacts():
     return _load_model_artifacts()
@@ -298,6 +367,52 @@ def load_holdout_metrics(feature_cols):
 @st.cache_data(ttl=3600)
 def load_upcoming(season: int):
     return build_upcoming_features(season=season)
+
+
+@st.cache_data(ttl=600)
+def load_completed(season: int, week: int) -> pd.DataFrame:
+    """Already-played games for this week, using the FROZEN prediction from
+    prediction_log.parquet (the same open-line snapshot the tracker grades
+    against) joined with the final score -- not a live recompute, so this
+    matches whatever `snapshot`/`update-results` would produce. Only covers
+    games that were snapshotted (all Week 1 games already are); an
+    unsnapshotted played game just won't have a row here."""
+    log_path = config.OUTPUTS_DIR / "prediction_log.parquet"
+    if not log_path.exists():
+        return pd.DataFrame()
+    log = pd.read_parquet(log_path)
+    log = log[(log["season"] == season) & (log["week"] == week)]
+    if log.empty:
+        return pd.DataFrame()
+
+    schedules = fetch_schedules(max_season=season, force_refresh=True)
+    schedules = standardize_team_abbrs(schedules, ["home_team", "away_team"])
+    schedules = schedules[(schedules["season"] == season) & (schedules["week"] == week)]
+    scores = schedules[["game_id", "home_score", "away_score"]]
+
+    merged = log.merge(scores, on="game_id", how="left")
+    completed = merged[merged["home_score"].notna()].copy()
+    if completed.empty:
+        return completed
+
+    completed["gameday"] = pd.to_datetime(completed["gameday"])
+    actual_margin = completed["home_score"] - completed["away_score"]
+    actual_winner = np.where(
+        completed["home_score"] > completed["away_score"], "home",
+        np.where(completed["away_score"] > completed["home_score"], "away", "tie"),
+    )
+    completed["winner_correct"] = (
+        ((completed["pred_margin"] > 0) & (actual_winner == "home")) |
+        ((completed["pred_margin"] < 0) & (actual_winner == "away"))
+    )
+    has_spread = completed["open_spread_line"].notna()
+    covered_home = (actual_margin - completed["open_spread_line"]) > 0
+    leans_home = (completed["pred_margin"] - completed["open_spread_line"]) > 0
+    spread_hit = np.where(leans_home, covered_home, ~covered_home)
+    completed["spread_correct"] = [
+        (bool(hit) if has else None) for hit, has in zip(spread_hit, has_spread)
+    ]
+    return completed.sort_values("gameday")
 
 
 @st.cache_data(ttl=86400)
@@ -337,41 +452,48 @@ def main():
         metrics = load_holdout_metrics(feature_cols)
     st.markdown(render_hero(metrics), unsafe_allow_html=True)
 
+    team_logos = load_team_logos()
+
     with st.spinner(f"Building features for {config.CURRENT_SEASON} Week {WEEK_TO_SHOW}..."):
         upcoming = load_upcoming(config.CURRENT_SEASON)
 
-    if upcoming.empty:
-        st.warning(
-            f"No upcoming games found for {config.CURRENT_SEASON}. Run "
-            "`python data/fetch_data.py` to refresh the schedule cache."
-        )
-        return
+    week_games = upcoming[upcoming["week"] == WEEK_TO_SHOW] if not upcoming.empty else upcoming
 
-    week_games = upcoming[upcoming["week"] == WEEK_TO_SHOW]
     if week_games.empty:
-        st.warning(f"No Week {WEEK_TO_SHOW} games found in the {config.CURRENT_SEASON} schedule.")
-        return
+        st.info(f"No upcoming games left in Week {WEEK_TO_SHOW} -- everything's been played.")
+    else:
+        predicted = predict(week_games, feature_cols)
+        predicted = add_market_edges(predicted)
 
-    predicted = predict(week_games, feature_cols)
-    predicted = add_market_edges(predicted)
-    team_logos = load_team_logos()
+        st.subheader(f"{config.CURRENT_SEASON} Season — Week {WEEK_TO_SHOW}")
 
-    st.subheader(f"{config.CURRENT_SEASON} Season — Week {WEEK_TO_SHOW}")
+        teams = sorted(set(predicted["home_team"]) | set(predicted["away_team"]))
+        team_choice = st.multiselect("Filter by team", options=teams)
 
-    teams = sorted(set(predicted["home_team"]) | set(predicted["away_team"]))
-    team_choice = st.multiselect("Filter by team", options=teams)
+        view = predicted.copy()
+        if team_choice:
+            view = view[view["home_team"].isin(team_choice) | view["away_team"].isin(team_choice)]
+        view = view.sort_values("gameday")
 
-    view = predicted.copy()
-    if team_choice:
-        view = view[view["home_team"].isin(team_choice) | view["away_team"].isin(team_choice)]
-    view = view.sort_values("gameday")
+        if view.empty:
+            st.info("No games match the current filters.")
+        else:
+            for _, row in view.iterrows():
+                st.markdown(render_game_card(row, team_logos), unsafe_allow_html=True)
 
-    if view.empty:
-        st.info("No games match the current filters.")
-        return
+    with st.spinner("Loading completed games..."):
+        completed = load_completed(config.CURRENT_SEASON, WEEK_TO_SHOW)
 
-    for _, row in view.iterrows():
-        st.markdown(render_game_card(row, team_logos), unsafe_allow_html=True)
+    if not completed.empty:
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.subheader(f"Completed Games — Week {WEEK_TO_SHOW}")
+        st.caption(
+            "Frozen open-line prediction (from the weekly tracker snapshot) vs. "
+            "the actual result. Winner call = straight-up/moneyline; spread call = "
+            "against-the-spread -- these can and do disagree."
+        )
+        for _, row in completed.iterrows():
+            st.markdown(render_result_card(row, team_logos), unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
