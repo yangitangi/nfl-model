@@ -167,6 +167,21 @@ CARD_CSS = """
 .result-wrong { background: rgba(255, 82, 82, 0.17); color: #ff6b6b; }
 .final-score { font-size: 1.25rem; font-weight: 800; color: #f2f4f8; margin-bottom: 0.55rem; }
 .section-divider { margin: 2.2rem 0 1rem 0; border-top: 1px solid rgba(255,255,255,0.14); padding-top: 1.4rem; }
+.my-bets {
+    margin-top: 0.8rem; padding-top: 0.7rem; border-top: 1px dashed rgba(255,255,255,0.14);
+    font-size: 0.8rem; color: #9aa2b6;
+}
+.my-bets-label {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; color: #6d7690; margin-bottom: 0.4rem;
+}
+.bet-badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-weight: 700; font-size: 0.8rem; margin: 0 0.4rem 0.35rem 0;
+}
+.bet-win { background: rgba(58, 201, 130, 0.15); color: #3ac982; }
+.bet-loss { background: rgba(255, 82, 82, 0.17); color: #ff6b6b; }
+.bet-push { background: rgba(154, 162, 182, 0.16); color: #9aa2b6; }
+.bet-pending { background: rgba(255, 176, 32, 0.16); color: #ffb020; }
 .game-footer {
     margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid rgba(255,255,255,0.09);
     font-size: 0.76rem; color: #8892a8;
@@ -216,7 +231,7 @@ def team_logo_img(team: str, team_logos: dict) -> str:
     return f'<img class="team-logo" src="{url}" alt="{team}">' if url else ""
 
 
-def render_game_card(row, team_logos: dict) -> str:
+def render_game_card(row, team_logos: dict, bets: pd.DataFrame = None) -> str:
     away_color = TEAM_COLORS.get(row["away_team"], "#5b6478")
     home_color = TEAM_COLORS.get(row["home_team"], "#5b6478")
     div_badge = '<span class="div-badge">Division game</span>' if row["div_game"] else ""
@@ -283,11 +298,12 @@ def render_game_card(row, team_logos: dict) -> str:
         </div>
       </div>
       <div class="game-footer">{format_weather(row)} &middot; Rest: {row['home_team']} {row['home_rest_days']}d / {row['away_team']} {row['away_rest_days']}d</div>
+      {render_bets_block(row['game_id'], bets) if bets is not None else ""}
     </div>
     """
 
 
-def render_result_card(row, team_logos: dict) -> str:
+def render_result_card(row, team_logos: dict, bets: pd.DataFrame = None) -> str:
     """Card for an already-played game: the frozen (open-line) prediction
     from prediction_log.parquet next to the actual result, with the two
     correctness calls kept as separate badges -- a model can get the
@@ -347,8 +363,38 @@ def render_result_card(row, team_logos: dict) -> str:
           <div class="stat-line">Spread call: {spread_badge}</div>
         </div>
       </div>
+      {render_bets_block(row['game_id'], bets) if bets is not None else ""}
     </div>
     """
+
+
+BET_RESULT_ICON = {"win": "✓", "loss": "✗", "push": "–", "pending": "?"}
+BET_RESULT_CLASS = {"win": "bet-win", "loss": "bet-loss", "push": "bet-push", "pending": "bet-pending"}
+
+
+@st.cache_data(ttl=300)
+def load_bets() -> pd.DataFrame:
+    """Your own placed bets (tracking/bet_tracker.py) -- has nothing to do
+    with the model's predictions, just a record of real action taken."""
+    bets_path = config.OUTPUTS_DIR / "bets.csv"
+    if not bets_path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(bets_path)
+
+
+def render_bets_block(game_id: str, bets: pd.DataFrame) -> str:
+    game_bets = bets[bets["game_id"] == game_id] if not bets.empty else bets
+    if game_bets.empty:
+        return ""
+    badges = []
+    for _, b in game_bets.iterrows():
+        line_str = f" {b['line']:+g}" if pd.notna(b.get("line")) else ""
+        type_str = "" if b["bet_type"] == "spread" else f" {b['bet_type']}"
+        label = f"{b['team']}{line_str}{type_str}"
+        cls = BET_RESULT_CLASS.get(b["result"], "bet-pending")
+        icon = BET_RESULT_ICON.get(b["result"], "?")
+        badges.append(f'<span class="bet-badge {cls}">{label} {icon}</span>')
+    return f'<div class="my-bets"><div class="my-bets-label">MY BETS</div>{"".join(badges)}</div>'
 
 
 @st.cache_resource
@@ -453,6 +499,7 @@ def main():
     st.markdown(render_hero(metrics), unsafe_allow_html=True)
 
     team_logos = load_team_logos()
+    bets = load_bets()
 
     with st.spinner(f"Building features for {config.CURRENT_SEASON} Week {WEEK_TO_SHOW}..."):
         upcoming = load_upcoming(config.CURRENT_SEASON)
@@ -479,7 +526,7 @@ def main():
             st.info("No games match the current filters.")
         else:
             for _, row in view.iterrows():
-                st.markdown(render_game_card(row, team_logos), unsafe_allow_html=True)
+                st.markdown(render_game_card(row, team_logos, bets), unsafe_allow_html=True)
 
     with st.spinner("Loading completed games..."):
         completed = load_completed(config.CURRENT_SEASON, WEEK_TO_SHOW)
@@ -493,7 +540,7 @@ def main():
             "against-the-spread -- these can and do disagree."
         )
         for _, row in completed.iterrows():
-            st.markdown(render_result_card(row, team_logos), unsafe_allow_html=True)
+            st.markdown(render_result_card(row, team_logos, bets), unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

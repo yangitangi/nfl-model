@@ -1,0 +1,7 @@
+bet_id,season,week,game_id,team,opponent,is_home,bet_type,line,odds,stake,placed_at,result,actual_margin,graded_at,notes
+2026_01_NE_SEA_SEA_moneyline,2026,1,2026_01_NE_SEA,SEA,NE,True,moneyline,,,,2026-09-11 21:10:31.126943+00:00,win,3.0,2026-09-11 21:11:03.996805+00:00,
+2026_01_NE_SEA_SEA_spread_-3.0,2026,1,2026_01_NE_SEA,SEA,NE,True,spread,-3.0,,,2026-09-11 21:10:31.974309+00:00,push,3.0,2026-09-11 21:11:03.998812+00:00,
+2026_01_SF_LA_SF_spread_4.0,2026,1,2026_01_SF_LA,SF,LA,False,spread,4.0,,,2026-09-11 21:10:32.824454+00:00,win,20.0,2026-09-11 21:11:03.999815+00:00,
+2026_01_TB_CIN_TB_spread_3.5,2026,1,2026_01_TB_CIN,TB,CIN,False,spread,3.5,,,2026-09-11 21:10:33.686158+00:00,pending,,,
+2026_01_CHI_CAR_CAR_spread_3.5,2026,1,2026_01_CHI_CAR,CAR,CHI,True,spread,3.5,,,2026-09-11 21:10:34.544659+00:00,pending,,,
+2026_01_MIA_LV_MIA_spread_3.5,2026,1,2026_01_MIA_LV,MIA,LV,False,spread,3.5,,,2026-09-11 21:10:35.395003+00:00,pending,,,
