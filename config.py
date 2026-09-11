@@ -66,6 +66,17 @@ NFLVERSE_TEAM_LOGOS_URL = (
     "teams_colors_logos.csv"
 )
 
+# Weekly depth charts (team, player, position, pos_rank -- rank 1 = starter),
+# updated throughout the season. Used ONLY to identify each team's CURRENT
+# starting QB for upcoming games -- who actually threw passes in a team's
+# most recent played game is not a reliable proxy for who's starting next
+# (offseason trades/free agency, a benching, or a meaningless Week 18
+# relief appearance all break that assumption; see add_current_qb_starters).
+NFLVERSE_DEPTH_CHARTS_URL_TEMPLATE = (
+    "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/"
+    "depth_charts_{season}.parquet"
+)
+
 # ---------------------------------------------------------------------------
 # FEATURE FLAGS
 # ---------------------------------------------------------------------------

@@ -177,6 +177,34 @@ def fetch_all_injuries(seasons: list[int] = None, force_refresh: bool = False) -
     return pd.concat(frames, ignore_index=True)
 
 
+def fetch_depth_chart(season: int, force_refresh: bool = False) -> pd.DataFrame:
+    """
+    Fetch the current-season weekly depth chart (team, player, position,
+    pos_rank). Same caching pattern as injuries -- the in-progress season's
+    file is updated continuously, so pass force_refresh=True to pick up the
+    latest snapshot (e.g. a Week 1 starter named just this week).
+    """
+    local_path = config.RAW_DATA_DIR / f"depth_chart_{season}.parquet"
+
+    if local_path.exists() and not force_refresh:
+        print(f"  [cache] Depth chart {season} already on disk -> {local_path.name}")
+        return pd.read_parquet(local_path)
+
+    url = config.NFLVERSE_DEPTH_CHARTS_URL_TEMPLATE.format(season=season)
+    print(f"  [download] Depth chart {season} from nflverse...")
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"  [ERROR] Failed to fetch depth chart for {season}: {e}")
+        return pd.DataFrame()
+
+    local_path.write_bytes(response.content)
+    df = pd.read_parquet(local_path)
+    print(f"  [saved] {len(df):,} depth chart rows -> {local_path.name}")
+    return df
+
+
 def fetch_team_logos(force_refresh: bool = False) -> pd.DataFrame:
     """
     Fetch team reference data (colors, logo URLs) from a sibling nflverse
