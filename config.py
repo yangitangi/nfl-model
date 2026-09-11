@@ -65,17 +65,31 @@ NFLVERSE_TEAM_LOGOS_URL = (
 FEATURES = {
     "efficiency": True,          # EPA/play, success rate           (v1)
     "turnovers": True,           # turnover margin (regressed)      (v1)
-    "qb_performance": True,      # QB EPA per dropback              (v1)
+    "qb_performance": False,     # QB EPA per dropback, TEAM-blended -- superseded by qb_specific_form (v1)
     "rest_travel": True,         # rest days, bye week, travel      (v1)
     "market": True,              # vegas spread/total (if available) (v1)
 
-    "qb_aggressiveness": True,   # CPOE, air yards                  (v2)
+    "qb_aggressiveness": False,  # CPOE, air yards, TEAM-blended -- superseded by qb_specific_form (v2)
     "injuries": False,           # injury report weighted count     (v2) -- needs new data source, not yet wired
     "weather": True,             # wind/temp/dome flag              (v2)
     "pressure_line_play": False, # sack rate proxies                (v2)
 
     "special_teams": False,      # EPA/play on ST snaps, own data    (v2.5) -- our own metric, see special_teams_dvoa below
     "opponent_adjusted_efficiency": False,  # single-pass opponent-adjustment proxy (v2.5)
+    # QB stats attributed to the CURRENT starter (see add_qb_starter_form),
+    # not blended across whoever's played for the team over the window --
+    # directly fixes the blind spot where a rolling team average takes
+    # several games to reflect an in-season starter change (injury,
+    # benching). Validated via the same 5-season walk-forward panel used
+    # throughout this project: REPLACING qb_performance+qb_aggressiveness
+    # with this beat the team-blended baseline on MAE (9.89->9.75), win
+    # accuracy (66.2%->66.5%), and ATS (49.6%->50.2%) -- despite losing
+    # ~9% of training rows to the stricter missing-data requirement a new
+    # starter's thin track record creates. Keeping BOTH together tested
+    # worse than this alone (the team-blended version becomes redundant
+    # noise once this exists), which is why qb_performance/
+    # qb_aggressiveness are off above rather than additionally on.
+    "qb_specific_form": True,    # (v2.5)
 
     "pass_block_win_rate": False,# requires PFF/NGS access           (v3)
     "special_teams_dvoa": False, # requires real Football Outsiders/FTN data -- distinct from
@@ -100,6 +114,9 @@ FEATURE_COLUMN_GROUPS = {
     "st_epa_per_play": "special_teams",
     "off_epa_vs_opp_baseline": "opponent_adjusted_efficiency",
     "def_epa_allowed_vs_opp_baseline": "opponent_adjusted_efficiency",
+    "start_qb_epa_per_dropback": "qb_specific_form",
+    "start_qb_cpoe": "qb_specific_form",
+    "start_qb_air_yards_per_att": "qb_specific_form",
 }
 
 # Weather defaults for indoor/dome/closed-roof games — there's no real

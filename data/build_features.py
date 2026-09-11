@@ -20,7 +20,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
-from data.fetch_data import fetch_all_seasons, fetch_schedules, standardize_team_abbrs
+from data.fetch_data import fetch_all_seasons, fetch_pbp_season, fetch_schedules, standardize_team_abbrs
 
 # Per-team-game stats that get rolled into trailing averages. Shared between
 # add_rolling_features (historical training rows) and compute_team_form_snapshot
@@ -40,6 +40,10 @@ ROLLING_STAT_COLS = [
 # shift+rolling math, so they're kept in their own list rather than mixed
 # into ROLLING_STAT_COLS above.
 OPPONENT_ADJUSTED_STAT_COLS = ["off_epa_vs_opp_baseline", "def_epa_allowed_vs_opp_baseline"]
+
+# Same three QB stats as the team-blended version above, but attributed to
+# the specific passer -- see add_qb_starter_form.
+QB_STARTER_STAT_COLS = ["qb_epa_per_dropback", "qb_cpoe", "qb_air_yards_per_att"]
 
 
 def build_team_game_stats(pbp: pd.DataFrame) -> pd.DataFrame:
@@ -263,6 +267,111 @@ def add_opponent_adjusted_features(team_game_rolled: pd.DataFrame) -> pd.DataFra
     return merged
 
 
+def build_qb_player_game_stats(pbp: pd.DataFrame) -> pd.DataFrame:
+    """
+    Per-player, per-game QB stats -- the same three columns as the
+    team-blended qb_* stats in build_team_game_stats, but split out by
+    passer_player_id instead of pooled across whoever threw for the team
+    that game. This is what lets a QB change (injury, benching) show up
+    in the very next game's features instead of being smoothed away by a
+    team-level rolling window that has no notion of who's actually playing.
+    """
+    live_plays = pbp[pbp["play_type"].isin(["pass", "run"])].copy()
+    dropbacks = live_plays[live_plays["qb_dropback"] == 1]
+    qb_player_game = dropbacks.groupby(
+        ["game_id", "posteam", "passer_player_id", "passer_player_name"]
+    ).agg(
+        qb_epa_per_dropback=("qb_epa", "mean"),
+        qb_cpoe=("cpoe", "mean"),
+        qb_air_yards_per_att=("air_yards", "mean"),
+        qb_dropbacks=("qb_epa", "count"),
+    ).reset_index().rename(columns={"posteam": "team"})
+    return qb_player_game.dropna(subset=["passer_player_id"])
+
+
+def add_qb_starter_form(team_game_rolled: pd.DataFrame, qb_player_game: pd.DataFrame,
+                         window: int = None) -> pd.DataFrame:
+    """
+    Attributes QB form to the CURRENT starter -- whoever had the most
+    dropbacks in a team's most recent game -- rather than blending
+    together whoever has thrown for the team over the last N games.
+    Directly fixes the blind spot where a team-level rolling average takes
+    several games to "catch up" after a starter is hurt or benched
+    mid-season (e.g. an injury on play 5 of a game -- the backup's own
+    limited-but-real track record should count, not get diluted by
+    5 games' worth of the previous starter's numbers).
+
+    "Current starter" is identified from the team's own most recently
+    PLAYED game (shift(1) on the team's own game sequence -- the same
+    anti-leakage pattern used everywhere else in this pipeline), so a
+    starter change is reflected starting the very next game, not blended
+    away over several.
+    """
+    window = config.ROLLING_WINDOW_GAMES if window is None else window
+    min_games = config.MIN_GAMES_FOR_ROLLING
+    roll_suffix = f"_roll{window}"
+
+    # Whoever had the most dropbacks for their team in a game is that
+    # game's "starter of record."
+    primary = (
+        qb_player_game.sort_values("qb_dropbacks", ascending=False)
+        .groupby(["game_id", "team"]).first().reset_index()
+    )
+
+    dates = team_game_rolled[["game_id", "team", "gameday"]].drop_duplicates()
+    primary = primary.merge(dates, on=["game_id", "team"], how="inner")
+    primary = primary.sort_values(["passer_player_id", "gameday"]).reset_index(drop=True)
+
+    # Each player's own rolling form INCLUSIVE of their most recent start --
+    # this is what a team inherits the moment this player becomes their
+    # starter, not a value shifted away from their own last game (that
+    # game already happened by the time it matters for the NEXT game,
+    # which is where this gets attached below).
+    for col in QB_STARTER_STAT_COLS:
+        primary[f"{col}_asof"] = (
+            primary.groupby("passer_player_id")[col]
+            .transform(lambda s: s.rolling(window=window, min_periods=min_games).mean())
+        )
+
+    asof_cols = [f"{c}_asof" for c in QB_STARTER_STAT_COLS]
+    team_game_rolled = team_game_rolled.merge(
+        primary[["game_id", "team"] + asof_cols], on=["game_id", "team"], how="left"
+    )
+    team_game_rolled = team_game_rolled.sort_values(["team", "gameday"]).reset_index(drop=True)
+
+    # Shift by the TEAM's own game sequence: game G inherits the starter-
+    # of-record's as-of form from G's immediately preceding game.
+    for col in QB_STARTER_STAT_COLS:
+        team_game_rolled[f"start_{col}{roll_suffix}"] = (
+            team_game_rolled.groupby("team")[f"{col}_asof"].shift(1)
+        )
+
+    # _asof columns are intentionally kept (not dropped) -- they don't end
+    # in _rollN so assemble_game_level_table won't pick them up as model
+    # features, but snapshot_qb_starter_form needs them for upcoming/
+    # playoff games (each team's CURRENT, not-yet-shifted, starter form).
+    return team_game_rolled
+
+
+def snapshot_qb_starter_form(team_game_rolled_with_asof: pd.DataFrame, window: int = None) -> pd.DataFrame:
+    """
+    For upcoming/playoff games (not yet played): each team's CURRENT
+    starter's rolling form, ready to be inherited by their next game.
+    This is the UNSHIFTED as-of value at each team's most recent played
+    game -- add_qb_starter_form's shift(1) is exactly what turns this into
+    "form entering the next game," so re-deriving it here (rather than
+    reusing the already-shifted historical columns) keeps this consistent
+    with how historical rows are built, one game further forward.
+    """
+    window = config.ROLLING_WINDOW_GAMES if window is None else window
+    latest = (
+        team_game_rolled_with_asof.sort_values("gameday")
+        .groupby("team")[[f"{c}_asof" for c in QB_STARTER_STAT_COLS]].last()
+        .reset_index()
+    )
+    return latest.rename(columns={f"{c}_asof": f"start_{c}_roll{window}" for c in QB_STARTER_STAT_COLS})
+
+
 def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
     """
     Converts the team-game (2 rows per game) table into the final
@@ -336,6 +445,10 @@ def build_feature_table(seasons: list[int] = None, save: bool = True) -> pd.Data
     print("Computing opponent-adjusted features...")
     team_game_rolled = add_opponent_adjusted_features(team_game_rolled)
 
+    print("Attributing QB form to the current starter, not the team...")
+    qb_player_game = build_qb_player_game_stats(pbp)
+    team_game_rolled = add_qb_starter_form(team_game_rolled, qb_player_game)
+
     print("Assembling final game-level table...")
     game_level = assemble_game_level_table(team_game_rolled)
 
@@ -397,10 +510,21 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     roll_suffix = f"_roll{window}"
     snapshot_cols = [f"{c}{roll_suffix}" for c in ROLLING_STAT_COLS]
     adj_snapshot_cols = [f"{c}{roll_suffix}" for c in OPPONENT_ADJUSTED_STAT_COLS]
-    all_snapshot_cols = snapshot_cols + adj_snapshot_cols
+    qb_snapshot_cols = [f"start_{c}{roll_suffix}" for c in QB_STARTER_STAT_COLS]
+    all_snapshot_cols = snapshot_cols + adj_snapshot_cols + qb_snapshot_cols
 
     print("Loading raw data...")
     pbp = fetch_all_seasons()
+    if season not in config.SEASONS:
+        # The season being predicted is in progress (games already played
+        # this week aren't in the historical 2010-END_SEASON range) --
+        # pull its play-by-play too, so rolling stats (including which QB
+        # is the current starter, see add_qb_starter_form) reflect games
+        # already played this season, not just through END_SEASON.
+        # force_refresh here since this file grows week to week.
+        current_pbp = fetch_pbp_season(season, force_refresh=force_refresh)
+        if not current_pbp.empty:
+            pbp = pd.concat([pbp, current_pbp], ignore_index=True)
     pbp = standardize_team_abbrs(pbp, ["home_team", "away_team", "posteam", "defteam"])
 
     # max_season=season pulls in the upcoming season too — fetch_schedules'
@@ -430,10 +554,15 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     team_game_rolled = add_rolling_features(team_game)
     team_game_rolled = add_opponent_adjusted_features(team_game_rolled)
 
+    print("Attributing QB form to the current starter, not the team...")
+    qb_player_game = build_qb_player_game_stats(pbp)
+    team_game_rolled = add_qb_starter_form(team_game_rolled, qb_player_game, window=window)
+
     print(f"Computing team form snapshots (last {window} games played)...")
     snapshot = compute_team_form_snapshot(team_game_rolled, ROLLING_STAT_COLS)
     snapshot_adj = compute_team_form_snapshot(team_game_rolled, OPPONENT_ADJUSTED_STAT_COLS)
-    snapshot = snapshot.merge(snapshot_adj, on="team")
+    snapshot_qb = snapshot_qb_starter_form(team_game_rolled, window=window)
+    snapshot = snapshot.merge(snapshot_adj, on="team").merge(snapshot_qb, on="team")
 
     # Weather fill for upcoming games: forecasts don't exist this far out, so
     # temp/wind are ~always NaN even for outdoor stadiums (unlike training
@@ -520,10 +649,15 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
     roll_suffix = f"_roll{window}"
     snapshot_cols = [f"{c}{roll_suffix}" for c in ROLLING_STAT_COLS]
     adj_snapshot_cols = [f"{c}{roll_suffix}" for c in OPPONENT_ADJUSTED_STAT_COLS]
-    all_snapshot_cols = snapshot_cols + adj_snapshot_cols
+    qb_snapshot_cols = [f"start_{c}{roll_suffix}" for c in QB_STARTER_STAT_COLS]
+    all_snapshot_cols = snapshot_cols + adj_snapshot_cols + qb_snapshot_cols
 
     print("Loading raw data...")
     pbp = fetch_all_seasons()
+    if season not in config.SEASONS:
+        current_pbp = fetch_pbp_season(season, force_refresh=True)
+        if not current_pbp.empty:
+            pbp = pd.concat([pbp, current_pbp], ignore_index=True)
     pbp = standardize_team_abbrs(pbp, ["home_team", "away_team", "posteam", "defteam"])
 
     schedules = fetch_schedules(max_season=season)
@@ -546,10 +680,15 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
     team_game_rolled = add_rolling_features(team_game)
     team_game_rolled = add_opponent_adjusted_features(team_game_rolled)
 
+    print("Attributing QB form to the current starter, not the team...")
+    qb_player_game = build_qb_player_game_stats(pbp)
+    team_game_rolled = add_qb_starter_form(team_game_rolled, qb_player_game, window=window)
+
     print(f"Computing end-of-regular-season form snapshots for {season}...")
     snapshot = compute_team_form_snapshot(team_game_rolled, ROLLING_STAT_COLS)
     snapshot_adj = compute_team_form_snapshot(team_game_rolled, OPPONENT_ADJUSTED_STAT_COLS)
-    snapshot = snapshot.merge(snapshot_adj, on="team")
+    snapshot_qb = snapshot_qb_starter_form(team_game_rolled, window=window)
+    snapshot = snapshot.merge(snapshot_adj, on="team").merge(snapshot_qb, on="team")
 
     games_played = (
         team_game_rolled.loc[team_game_rolled["season"] == season]

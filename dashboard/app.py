@@ -33,8 +33,8 @@ st.set_page_config(page_title="NFL Game Predictions", page_icon="\U0001F3C8", la
 
 # Which week of the upcoming season to show. Hardcoded rather than a
 # selectbox for now — Streamlit's selectbox widget wasn't behaving in
-# testing, and Week 1 is what's actually actionable right now anyway.
-WEEK_TO_SHOW = 1
+# testing. Bump this each week as the season progresses.
+WEEK_TO_SHOW = 2
 
 # "Notable edge" thresholds — just a display cue, not a betting signal.
 # The model currently trails Vegas on the 2025 holdout (see metrics below),
@@ -213,10 +213,13 @@ def render_game_card(row, team_logos: dict) -> str:
     home_color = TEAM_COLORS.get(row["home_team"], "#5b6478")
     div_badge = '<span class="div-badge">Division game</span>' if row["div_game"] else ""
 
-    spread_tier = edge_tier(row["spread_edge"], SPREAD_EDGE_THRESHOLD)
-    spread_lean = row["home_team"] if row["spread_edge"] > 0 else row["away_team"]
-    spread_badge = (f'<span class="edge-badge edge-{spread_tier}">'
-                     f'{row["spread_edge"]:+.1f} pts &middot; {spread_lean}</span>')
+    if pd.notna(row["spread_edge"]):
+        spread_tier = edge_tier(row["spread_edge"], SPREAD_EDGE_THRESHOLD)
+        spread_lean = row["home_team"] if row["spread_edge"] > 0 else row["away_team"]
+        spread_badge = (f'<span class="edge-badge edge-{spread_tier}">'
+                         f'{row["spread_edge"]:+.1f} pts &middot; {spread_lean}</span>')
+    else:
+        spread_badge = '<span class="edge-badge">n/a</span>'
 
     if pd.notna(row["ml_edge"]):
         ml_tier = edge_tier(row["ml_edge"], ML_EDGE_THRESHOLD)

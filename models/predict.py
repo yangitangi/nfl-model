@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -71,11 +72,15 @@ def add_market_edges(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["fair_home_ml_prob"] = out.apply(
         lambda r: fair_home_win_prob(r["home_moneyline"], r["away_moneyline"])
-        if pd.notna(r["home_moneyline"]) and pd.notna(r["away_moneyline"]) else pd.NA,
+        if pd.notna(r["home_moneyline"]) and pd.notna(r["away_moneyline"]) else np.nan,
         axis=1,
     )
+    # pd.to_numeric (not .astype(float)) since a row-wise apply mixing real
+    # floats with a missing marker can produce an object-dtype column that
+    # .astype(float) chokes on outright rather than just leaving NaN.
+    out["fair_home_ml_prob"] = pd.to_numeric(out["fair_home_ml_prob"], errors="coerce")
     out["spread_edge"] = out["pred_margin"] - out["spread_line"]
-    out["ml_edge"] = out["pred_home_win_prob"] - out["fair_home_ml_prob"].astype(float)
+    out["ml_edge"] = out["pred_home_win_prob"] - out["fair_home_ml_prob"]
     return out
 
 
