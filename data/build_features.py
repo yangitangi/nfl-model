@@ -56,6 +56,28 @@ OPPONENT_ADJUSTED_STAT_COLS = ["off_epa_vs_opp_baseline", "def_epa_allowed_vs_op
 # the specific passer -- see add_qb_starter_form.
 QB_STARTER_STAT_COLS = ["qb_epa_per_dropback", "qb_cpoe", "qb_air_yards_per_att"]
 
+# How many of a team's last games the majority-vote fallback (see
+# _majority_starter_asof) looks at when picking a "current starter" for an
+# upcoming game without trusting the depth chart. Deliberately small: a
+# real, sustained QB change shows up within a couple of games; a single
+# relief appearance in a meaningless finale or an injury mop-up shouldn't
+# be enough on its own to flip who we treat as a team's presumptive
+# starter. Confirmed case: TEN's Week 18 2025 finale, where a backup threw
+# 31 dropbacks in relief -- majority-vote over the last 3 games correctly
+# keeps the actual starter (2 of 3) instead of flipping to the backup.
+STARTER_STABILITY_GAMES = 3
+
+# How many seasons of staleness a depth-chart-listed starter's own last
+# recorded game can have before his rolling stats are considered too
+# unreliable to trust (falls back to the team-based heuristic instead).
+# Confirmed case: CLE's depth chart lists a starter who hasn't recorded a
+# dropback in nearly 2 full seasons (long-term injury) -- the depth chart
+# can still be the honest, correct call (confirmed manually, not something
+# this guard tries to auto-detect), but his OWN rolling numbers from that
+# long ago are stale enough that using them uncritically would be worse
+# than the team-based fallback.
+STARTER_RECENCY_SEASONS = 2
+
 
 def build_team_game_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     """
@@ -315,7 +337,7 @@ def _qb_primary_with_asof(team_game_rolled: pd.DataFrame, qb_player_game: pd.Dat
         qb_player_game.sort_values("qb_dropbacks", ascending=False)
         .groupby(["game_id", "team"]).first().reset_index()
     )
-    dates = team_game_rolled[["game_id", "team", "gameday"]].drop_duplicates()
+    dates = team_game_rolled[["game_id", "team", "gameday", "season"]].drop_duplicates()
     primary = primary.merge(dates, on=["game_id", "team"], how="inner")
     primary = primary.sort_values(["passer_player_id", "gameday"]).reset_index(drop=True)
 
@@ -394,6 +416,31 @@ def get_current_qb_starters(season: int, force_refresh: bool = True) -> pd.DataF
     return latest[["team", "gsis_id"]].rename(columns={"gsis_id": "passer_player_id"})
 
 
+def _majority_starter_asof(primary: pd.DataFrame) -> pd.DataFrame:
+    """
+    Forward-looking fallback for a team's "current starter": instead of
+    naively using whoever had the most dropbacks in a team's single most
+    recent game (which one relief appearance can flip), use whoever was
+    primary passer in the MOST of the team's last STARTER_STABILITY_GAMES
+    games, tie-broken toward the more recent of the tied players. A real,
+    sustained starter change still comes through within a couple of games;
+    an isolated one-game blip reverts to the established starter.
+    """
+    asof_cols = [f"{c}_asof" for c in QB_STARTER_STAT_COLS]
+    recent = primary.sort_values("gameday").groupby("team").tail(STARTER_STABILITY_GAMES)
+
+    def pick_majority(group: pd.DataFrame) -> str:
+        counts = group["passer_player_id"].value_counts()
+        tied = counts[counts == counts.max()].index
+        return group[group["passer_player_id"].isin(tied)].sort_values("gameday")["passer_player_id"].iloc[-1]
+
+    majority = recent.groupby("team").apply(pick_majority).rename("passer_player_id").reset_index()
+    player_asof = (
+        primary.sort_values("gameday").groupby("passer_player_id")[asof_cols].last().reset_index()
+    )
+    return majority.merge(player_asof, on="passer_player_id", how="left")[["team"] + asof_cols]
+
+
 def snapshot_qb_starter_form(team_game_rolled_with_asof: pd.DataFrame,
                               qb_player_game: pd.DataFrame = None, season: int = None,
                               window: int = None) -> pd.DataFrame:
@@ -401,48 +448,67 @@ def snapshot_qb_starter_form(team_game_rolled_with_asof: pd.DataFrame,
     For upcoming games: each team's CURRENT starter's rolling form, ready
     to be inherited by their next game.
 
-    When qb_player_game + season are given, "current starter" comes from
-    the real depth chart (get_current_qb_starters) and the form used is
-    that SPECIFIC PLAYER's own rolling stats -- wherever/whichever team he
-    last played for, which correctly follows him across a trade or a
-    free-agent signing. Falls back to the team's own most-recent-game
-    passer (the old heuristic) for any team where the depth-chart starter
-    has no prior primary-passer history to compute a rolling average from
-    (e.g. a true rookie making his first career start).
+    When qb_player_game is given, "current starter" is resolved in two
+    layers:
+      1. Preferred: the real depth chart (get_current_qb_starters), using
+         that SPECIFIC PLAYER's own rolling stats -- wherever/whichever
+         team he last played for, which correctly follows him across a
+         trade or a free-agent signing. Skipped per-team if that player's
+         own last recorded game is more than STARTER_RECENCY_SEASONS
+         seasons stale (a long-term-injured "QB1" whose depth-chart slot
+         is honest but whose own numbers are too old to trust -- see CLE/
+         Deshaun Watson, confirmed manually as still the real starter
+         despite ~2 seasons without a snap in our data).
+      2. Fallback (used when there's no depth chart, or the depth-chart
+         starter fails the recency check): _majority_starter_asof, NOT the
+         old single-most-recent-game heuristic -- avoids the same
+         "one relief appearance flips the starter" problem for teams the
+         depth chart doesn't resolve.
 
-    Without qb_player_game/season (used by build_playoff_features, which
-    is retrospective -- grading already-played games under the SAME
-    conditions the model trained under), falls back to the team-based
-    heuristic only, since "today's depth chart" would be a nonsensical,
-    time-traveling input for a game that already happened.
+    Without qb_player_game (used by build_playoff_features, which is
+    retrospective -- grading already-played games under the SAME
+    conditions the model trained under), falls back to the plain
+    single-most-recent-game heuristic with no smoothing or depth chart:
+    "today's depth chart" would be a nonsensical, time-traveling input for
+    a game that already happened, and majority-vote smoothing would make
+    playoff backtesting inconsistent with how the model was trained.
     """
     window = config.ROLLING_WINDOW_GAMES if window is None else window
     asof_cols = [f"{c}_asof" for c in QB_STARTER_STAT_COLS]
 
-    fallback = (
-        team_game_rolled_with_asof.sort_values("gameday")
-        .groupby("team")[asof_cols].last()
-        .reset_index()
-    )
+    if qb_player_game is None:
+        result = (
+            team_game_rolled_with_asof.sort_values("gameday")
+            .groupby("team")[asof_cols].last()
+            .reset_index()
+        )
+        return result.rename(columns={f"{c}_asof": f"start_{c}_roll{window}" for c in QB_STARTER_STAT_COLS})
 
-    if qb_player_game is None or season is None:
+    primary = _qb_primary_with_asof(team_game_rolled_with_asof, qb_player_game, window)
+    fallback = _majority_starter_asof(primary)
+
+    starters = get_current_qb_starters(season) if season is not None else pd.DataFrame()
+    if starters.empty:
         result = fallback
     else:
-        starters = get_current_qb_starters(season)
-        if starters.empty:
-            result = fallback
-        else:
-            primary = _qb_primary_with_asof(team_game_rolled_with_asof, qb_player_game, window)
-            player_asof = (
-                primary.sort_values("gameday").groupby("passer_player_id")[asof_cols].last().reset_index()
-            )
-            resolved = starters.merge(player_asof, on="passer_player_id", how="left")
-            result = fallback.merge(
-                resolved[["team"] + asof_cols], on="team", how="left", suffixes=("_fallback", "")
-            )
-            for col in asof_cols:
-                result[col] = result[col].fillna(result[f"{col}_fallback"])
-            result = result[["team"] + asof_cols]
+        player_asof = (
+            primary.sort_values("gameday").groupby("passer_player_id")[asof_cols].last().reset_index()
+        )
+        last_season_played = (
+            primary.sort_values("gameday").groupby("passer_player_id")["season"].last()
+            .rename("last_season_played").reset_index()
+        )
+        resolved = starters.merge(player_asof, on="passer_player_id", how="left")
+        resolved = resolved.merge(last_season_played, on="passer_player_id", how="left")
+        stale = (season - resolved["last_season_played"]) > STARTER_RECENCY_SEASONS
+        resolved.loc[stale.fillna(False), asof_cols] = np.nan
+
+        result = fallback.merge(
+            resolved[["team"] + asof_cols], on="team", how="left", suffixes=("_fallback", "")
+        )
+        for col in asof_cols:
+            result[col] = result[col].fillna(result[f"{col}_fallback"])
+        result = result[["team"] + asof_cols]
 
     return result.rename(columns={f"{c}_asof": f"start_{c}_roll{window}" for c in QB_STARTER_STAT_COLS})
 
