@@ -137,6 +137,46 @@ def fetch_schedules(force_refresh: bool = False, min_season: int = None,
     return df
 
 
+def fetch_injuries_season(season: int, force_refresh: bool = False) -> pd.DataFrame:
+    """
+    Fetch the official weekly injury report for one season. Cached to disk
+    like pbp -- but unlike pbp, the CURRENT season's file grows every week,
+    so pass force_refresh=True for the in-progress season.
+    """
+    local_path = config.RAW_DATA_DIR / f"injuries_{season}.parquet"
+
+    if local_path.exists() and not force_refresh:
+        print(f"  [cache] Injuries {season} already on disk -> {local_path.name}")
+        return pd.read_parquet(local_path)
+
+    url = config.NFLVERSE_INJURIES_URL_TEMPLATE.format(season=season)
+    print(f"  [download] Injuries {season} from nflverse...")
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"  [ERROR] Failed to fetch injuries for {season}: {e}")
+        return pd.DataFrame()
+
+    local_path.write_bytes(response.content)
+    df = pd.read_parquet(local_path)
+    print(f"  [saved] {len(df):,} injury report rows -> {local_path.name}")
+    return df
+
+
+def fetch_all_injuries(seasons: list[int] = None, force_refresh: bool = False) -> pd.DataFrame:
+    """Fetch injury reports for every season in `seasons` (defaults to
+    config.SEASONS) and combine. force_refresh applies to every season
+    fetched -- for just the current in-progress season, call
+    fetch_injuries_season directly instead."""
+    seasons = seasons or config.SEASONS
+    frames = [fetch_injuries_season(s, force_refresh=force_refresh) for s in seasons]
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def fetch_team_logos(force_refresh: bool = False) -> pd.DataFrame:
     """
     Fetch team reference data (colors, logo URLs) from a sibling nflverse

@@ -20,7 +20,18 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
-from data.fetch_data import fetch_all_seasons, fetch_pbp_season, fetch_schedules, standardize_team_abbrs
+from data.fetch_data import (
+    fetch_all_injuries, fetch_all_seasons, fetch_injuries_season, fetch_pbp_season,
+    fetch_schedules, standardize_team_abbrs,
+)
+
+# Weighted severity of each official injury-report status, for a simple
+# "injury burden" score per team per week. Out counts fully, Doubtful
+# mostly, Questionable partially; Probable is a deprecated (pre-~2016)
+# designation for a minor, unlikely-to-affect-availability concern, weighted
+# lightly rather than excluded outright since it still carries some signal
+# in older seasons. Anything else (no designation, practice-only status) is 0.
+INJURY_STATUS_WEIGHTS = {"Out": 1.0, "Doubtful": 0.75, "Questionable": 0.25, "Probable": 0.1}
 
 # Per-team-game stats that get rolled into trailing averages. Shared between
 # add_rolling_features (historical training rows) and compute_team_form_snapshot
@@ -372,6 +383,33 @@ def snapshot_qb_starter_form(team_game_rolled_with_asof: pd.DataFrame, window: i
     return latest.rename(columns={f"{c}_asof": f"start_{c}_roll{window}" for c in QB_STARTER_STAT_COLS})
 
 
+def build_injury_burden(injuries: pd.DataFrame) -> pd.DataFrame:
+    """
+    A simple weighted count of a team's notable injuries entering a given
+    week's game, from the OFFICIAL weekly injury report -- published
+    before that week's games, so this is legitimate pre-game information,
+    not leakage, same category as the market spread. Not a rolling stat
+    (no shift+window needed): the report for week W is inherently about
+    week W's game, not a trailing average of past weeks.
+    """
+    injuries = injuries.copy()
+    injuries["weight"] = injuries["report_status"].map(INJURY_STATUS_WEIGHTS).fillna(0)
+    burden = injuries.groupby(["season", "week", "team"])["weight"].sum().reset_index()
+    return burden.rename(columns={"weight": "injury_burden"})
+
+
+def attach_injury_burden(team_game: pd.DataFrame, injury_burden: pd.DataFrame) -> pd.DataFrame:
+    """
+    Left-merge so a team-week with NO qualifying injuries (not present in
+    injury_burden at all, since it only has rows for actual designations)
+    correctly becomes 0 burden rather than NaN -- an inner merge here would
+    silently drop every healthy team's games from training.
+    """
+    merged = team_game.merge(injury_burden, on=["season", "week", "team"], how="left")
+    merged["injury_burden"] = merged["injury_burden"].fillna(0)
+    return merged
+
+
 def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
     """
     Converts the team-game (2 rows per game) table into the final
@@ -387,6 +425,8 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
                          "is_outdoor", "temp", "wind"]
     keep_cols = shared_game_cols + ["team", "is_home", "rest_days",
                  "games_played_this_season", "point_margin", "win"] + rolling_cols
+    if "injury_burden" in team_game_rolled.columns:
+        keep_cols.append("injury_burden")
 
     slim = team_game_rolled[keep_cols]
 
@@ -438,6 +478,12 @@ def build_feature_table(seasons: list[int] = None, save: bool = True) -> pd.Data
 
     print("Attaching schedule context (rest, home/away, market lines)...")
     team_game = add_schedule_context(team_game, played_schedules)
+
+    print("Attaching weekly injury reports...")
+    injuries = fetch_all_injuries(seasons)
+    injuries = standardize_team_abbrs(injuries, ["team"])
+    injury_burden = build_injury_burden(injuries)
+    team_game = attach_injury_burden(team_game, injury_burden)
 
     print("Computing rolling features (no data leakage)...")
     team_game_rolled = add_rolling_features(team_game)
@@ -579,6 +625,29 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     upcoming["temp"] = np.where(outdoor_mask, outdoor_temp_median, config.DOME_DEFAULT_TEMP_F)
     upcoming["wind"] = np.where(outdoor_mask, outdoor_wind_median, config.DOME_DEFAULT_WIND_MPH)
 
+    # Injury burden for upcoming games: this week's OWN report, not a
+    # rolling snapshot -- fetched fresh (force_refresh, since the current
+    # season's file grows weekly) and only meaningful for whichever week is
+    # close enough to have a real report filed; weeks further out fall back
+    # to 0 (no known injuries yet) via the same left-merge-and-fillna as
+    # the historical pipeline, which is an honest "no news yet," not a bug.
+    print("Attaching weekly injury reports (this week's own report, not rolling)...")
+    current_injuries = fetch_injuries_season(season, force_refresh=True)
+    current_injuries = standardize_team_abbrs(current_injuries, ["team"])
+    if not current_injuries.empty:
+        injury_burden_upcoming = build_injury_burden(current_injuries)
+    else:
+        injury_burden_upcoming = pd.DataFrame(columns=["season", "week", "team", "injury_burden"])
+
+    upcoming = upcoming.merge(
+        injury_burden_upcoming.rename(columns={"team": "home_team", "injury_burden": "home_injury_burden"}),
+        on=["season", "week", "home_team"], how="left")
+    upcoming = upcoming.merge(
+        injury_burden_upcoming.rename(columns={"team": "away_team", "injury_burden": "away_injury_burden"}),
+        on=["season", "week", "away_team"], how="left")
+    upcoming["home_injury_burden"] = upcoming["home_injury_burden"].fillna(0)
+    upcoming["away_injury_burden"] = upcoming["away_injury_burden"].fillna(0)
+
     print(f"Building feature rows for {len(upcoming):,} upcoming games...")
     home_snapshot = snapshot.rename(
         columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in all_snapshot_cols}}
@@ -605,6 +674,7 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
         "is_outdoor", "temp", "wind",
         "home_rest_days", "away_rest_days",
         "home_games_played_this_season", "away_games_played_this_season",
+        "home_injury_burden", "away_injury_burden",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
     game_level = game_level[keep_cols].copy()
@@ -710,6 +780,23 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
     playoff_games["wind"] = np.where(
         outdoor_mask, playoff_games["wind"].fillna(outdoor_wind_median), config.DOME_DEFAULT_WIND_MPH)
 
+    # Injury reports are real here too (these games already happened) --
+    # the actual report filed for that playoff week, not an estimate.
+    playoff_injuries = fetch_injuries_season(season)
+    playoff_injuries = standardize_team_abbrs(playoff_injuries, ["team"])
+    if not playoff_injuries.empty:
+        playoff_injury_burden = build_injury_burden(playoff_injuries)
+    else:
+        playoff_injury_burden = pd.DataFrame(columns=["season", "week", "team", "injury_burden"])
+    playoff_games = playoff_games.merge(
+        playoff_injury_burden.rename(columns={"team": "home_team", "injury_burden": "home_injury_burden"}),
+        on=["season", "week", "home_team"], how="left")
+    playoff_games = playoff_games.merge(
+        playoff_injury_burden.rename(columns={"team": "away_team", "injury_burden": "away_injury_burden"}),
+        on=["season", "week", "away_team"], how="left")
+    playoff_games["home_injury_burden"] = playoff_games["home_injury_burden"].fillna(0)
+    playoff_games["away_injury_burden"] = playoff_games["away_injury_burden"].fillna(0)
+
     home_snapshot = snapshot.rename(
         columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in all_snapshot_cols}})
     away_snapshot = snapshot.rename(
@@ -740,6 +827,7 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
         "is_outdoor", "temp", "wind",
         "home_rest_days", "away_rest_days",
         "home_games_played_this_season", "away_games_played_this_season",
+        "home_injury_burden", "away_injury_burden",
         "home_score", "away_score", "actual_margin", "actual_winner",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 

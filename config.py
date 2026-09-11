@@ -49,6 +49,15 @@ NFLVERSE_SCHEDULE_URL = (
     "games.parquet"
 )
 
+# Official weekly injury reports (team, position, report_status = Out/
+# Doubtful/Questionable, practice_status), back to 2009. Published by each
+# team before that week's games -- legitimate pre-game information, not
+# leakage, same category as the market spread.
+NFLVERSE_INJURIES_URL_TEMPLATE = (
+    "https://github.com/nflverse/nflverse-data/releases/download/injuries/"
+    "injuries_{season}.parquet"
+)
+
 # Team colors/logos reference (sibling nflverse repo, not the main
 # nflverse-data releases -- maintained alongside it, same organization).
 # Used only for dashboard display (team logo icons), not model features.
@@ -70,7 +79,16 @@ FEATURES = {
     "market": True,              # vegas spread/total (if available) (v1)
 
     "qb_aggressiveness": False,  # CPOE, air yards, TEAM-blended -- superseded by qb_specific_form (v2)
-    "injuries": False,           # injury report weighted count     (v2) -- needs new data source, not yet wired
+    # Weighted count of a team's Out/Doubtful/Questionable players on that
+    # week's OFFICIAL injury report (nflverse, back to 2009) -- legitimate
+    # pre-game info, not leakage, same category as the market spread. Only
+    # meaningful close to game time (official reports post a few days
+    # before kickoff); weeks further out fall back to 0 (no news yet).
+    # Validated via the same 5-season walk-forward panel: improved all
+    # three metrics (MAE 9.75->9.71, win accuracy 66.5%->67.4%,
+    # ATS 50.2%->51.3%), and at ZERO training-row cost (every team-week
+    # has a burden value, even if 0) unlike most other v2/v2.5 features.
+    "injuries": True,            # (v2)
     "weather": True,             # wind/temp/dome flag              (v2)
     "pressure_line_play": False, # sack rate proxies                (v2)
 
