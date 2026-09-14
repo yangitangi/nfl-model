@@ -419,44 +419,55 @@ def render_bets_block(game_id: str, bets: pd.DataFrame) -> str:
     return f'<div class="my-bets"><div class="my-bets-label">MY BETS</div>{"".join(badges)}</div>'
 
 
-def render_model_results_table(completed: pd.DataFrame) -> str:
+def render_model_results_table(week_predictions: pd.DataFrame) -> str:
     """Consolidated table version of the per-card RESULT block already
     shown in the Completed Games cards above -- same winner/spread split,
-    just all in one place for a week-at-a-glance view."""
-    if completed.empty:
+    just all in one place for a week-at-a-glance view. Includes games that
+    haven't been played yet (is_final=False) as a row showing TBD for
+    anything that depends on a final score -- accuracy stats below only
+    count the final ones."""
+    if week_predictions.empty:
         return ""
 
     def badge(correct) -> str:
         if correct is None:
-            return '<span class="edge-badge">n/a</span>'
+            return '<span class="edge-badge">TBD</span>'
         cls = "result-correct" if correct else "result-wrong"
         label = "Correct" if correct else "Wrong"
         return f'<span class="edge-badge {cls}">{label}</span>'
 
     rows = []
-    for _, r in completed.sort_values("gameday").iterrows():
+    for _, r in week_predictions.sort_values("gameday").iterrows():
         pred_spread = format_spread(r["home_team"], r["away_team"], r["pred_margin"])
-        actual_spread = format_spread(r["home_team"], r["away_team"], r["actual_margin"])
-        winner_badge = badge(bool(r["winner_correct"]))
-        spread_correct = None if pd.isna(r["spread_correct"]) else bool(r["spread_correct"])
-        spread_badge = badge(spread_correct)
-        own_line_badge = badge(bool(r["beat_own_line"]))
+        if r["is_final"]:
+            actual_spread = format_spread(r["home_team"], r["away_team"], r["actual_margin"])
+            actual_cell = f'<b>{r["away_score"]:.0f}&ndash;{r["home_score"]:.0f}</b> ({actual_spread})'
+        else:
+            actual_cell = "TBD"
+        winner_badge = badge(r["winner_correct"])
+        spread_badge = badge(r["spread_correct"])
+        own_line_badge = badge(r["beat_own_line"])
         rows.append(
             f'<tr><td>{r["away_team"]} @ <b>{r["home_team"]}</b></td>'
             f'<td>{pred_spread}</td>'
             f'<td>{r["pred_home_win_prob"]*100:.0f}% {r["home_team"]}</td>'
-            f'<td><b>{r["away_score"]:.0f}&ndash;{r["home_score"]:.0f}</b> ({actual_spread})</td>'
+            f'<td>{actual_cell}</td>'
             f'<td>{winner_badge}</td>'
             f'<td>{spread_badge}</td>'
             f'<td>{own_line_badge}</td></tr>'
         )
 
-    n = len(completed)
-    win_acc = completed["winner_correct"].mean()
-    ats_valid = completed["spread_correct"].dropna()
+    final = week_predictions[week_predictions["is_final"]]
+    n = len(final)
+    win_acc = final["winner_correct"].mean() if n else None
+    win_str = f"{win_acc:.0%}" if win_acc is not None else "n/a"
+    ats_valid = final["spread_correct"].dropna()
     ats_acc = ats_valid.mean() if not ats_valid.empty else None
     ats_str = f"{ats_acc:.0%}" if ats_acc is not None else "n/a"
-    own_line_acc = completed["beat_own_line"].mean()
+    own_line_acc = final["beat_own_line"].mean() if n else None
+    own_line_str = f"{own_line_acc:.0%}" if own_line_acc is not None else "n/a"
+    pending = len(week_predictions) - n
+    pending_str = f" &middot; {pending} game(s) still TBD" if pending else ""
 
     # Every line of this HTML block must stay unindented with no blank
     # lines -- Streamlit's markdown pass (even with unsafe_allow_html)
@@ -469,9 +480,9 @@ def render_model_results_table(completed: pd.DataFrame) -> str:
         '<th>Actual (Margin)</th><th>Winner Call</th><th>Spread Call</th>'
         '<th>Beat Own Line <span class="sub">(ref.)</span></th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table>'
-        f'<div class="bets-summary-footer">Winner accuracy: <b>{win_acc:.0%}</b> ({n} games) '
+        f'<div class="bets-summary-footer">Winner accuracy: <b>{win_str}</b> ({n} graded games) '
         f'&middot; Spread (ATS) vs. market accuracy: <b>{ats_str}</b> '
-        f'&middot; Beat own line (reference, not vs. market): <b>{own_line_acc:.0%}</b></div></div>'
+        f'&middot; Beat own line (reference, not vs. market): <b>{own_line_str}</b>{pending_str}</div></div>'
     )
 
 
@@ -535,19 +546,23 @@ def load_holdout_agreement_breakdown(feature_cols):
     return _agreement_stats(predicted, "winner_correct", "spread_correct")
 
 
-def render_bucket_discrepancy_section(completed: pd.DataFrame, feature_cols) -> str:
+def render_bucket_discrepancy_section(week_predictions: pd.DataFrame, feature_cols) -> str:
     """Two parts: a per-game log of OUR predicted favorite-size bucket vs.
     the MARKET's bucket (sorted by |edge| so the biggest disagreements are
     on top), then an Agree-vs-Mismatch accuracy summary for this week and
-    the 2025 holdout."""
-    if completed.empty:
+    the 2025 holdout. The bucket/edge comparison itself only needs our
+    prediction and the market's line -- both known before kickoff -- so a
+    still-pending game still gets a real row here, just with TBD for the
+    two correctness columns; the Agree/Mismatch accuracy stats below only
+    count games that are actually final."""
+    if week_predictions.empty:
         return ""
-    tagged = _add_bucket_cols(completed, "pred_margin", "open_spread_line")
+    tagged = _add_bucket_cols(week_predictions, "pred_margin", "open_spread_line")
     tagged = tagged.sort_values("_edge", key=lambda s: s.abs(), ascending=False)
 
     def badge(correct) -> str:
         if correct is None:
-            return '<span class="edge-badge">n/a</span>'
+            return '<span class="edge-badge">TBD</span>'
         cls = "result-correct" if correct else "result-wrong"
         return f'<span class="edge-badge {cls}">{"Correct" if correct else "Wrong"}</span>'
 
@@ -557,18 +572,17 @@ def render_bucket_discrepancy_section(completed: pd.DataFrame, feature_cols) -> 
         mkt_spread = format_spread(r["home_team"], r["away_team"], r["open_spread_line"])
         match_badge = ('<span class="bet-badge bet-win">match</span>' if r["_bucket_match"]
                         else '<span class="bet-badge bet-loss">mismatch</span>')
-        spread_correct = None if pd.isna(r["spread_correct"]) else bool(r["spread_correct"])
         log_rows.append(
             f'<tr><td>{r["away_team"]} @ <b>{r["home_team"]}</b></td>'
             f'<td>{our_spread} <span class="sub">({r["_our_bucket"]})</span></td>'
             f'<td>{mkt_spread} <span class="sub">({r["_market_bucket"]})</span></td>'
             f'<td>{r["_edge"]:+.1f} pts</td>'
             f'<td>{match_badge}</td>'
-            f'<td>{badge(bool(r["winner_correct"]))}</td>'
-            f'<td>{badge(spread_correct)}</td></tr>'
+            f'<td>{badge(r["winner_correct"])}</td>'
+            f'<td>{badge(r["spread_correct"])}</td></tr>'
         )
 
-    week_stats = _agreement_stats(tagged, "winner_correct", "spread_correct")
+    week_stats = _agreement_stats(tagged[tagged["is_final"]], "winner_correct", "spread_correct")
     holdout_stats = load_holdout_agreement_breakdown(feature_cols)
 
     def cell(stats, label):
@@ -718,6 +732,63 @@ def load_completed(season: int, week: int) -> pd.DataFrame:
     return completed.sort_values("gameday")
 
 
+@st.cache_data(ttl=600)
+def load_week_predictions(season: int, week: int) -> pd.DataFrame:
+    """Every snapshotted game for this week, played or not -- unlike
+    load_completed (played games only, used for the result cards), this
+    feeds the summary tables so a still-pending game (SNF, MNF) shows up
+    as a row with TBD in place of anything that depends on a final score,
+    rather than vanishing from those tables until it's graded. The
+    predicted-spread-vs-market comparison doesn't need a final score at
+    all, so that part is still meaningful for a pending game."""
+    log_path = config.OUTPUTS_DIR / "prediction_log.parquet"
+    if not log_path.exists():
+        return pd.DataFrame()
+    log = pd.read_parquet(log_path)
+    log = log[(log["season"] == season) & (log["week"] == week)]
+    if log.empty:
+        return log
+
+    schedules = fetch_schedules(max_season=season, force_refresh=True)
+    schedules = standardize_team_abbrs(schedules, ["home_team", "away_team"])
+    schedules = schedules[(schedules["season"] == season) & (schedules["week"] == week)]
+    scores = schedules[["game_id", "home_score", "away_score"]]
+
+    merged = log.merge(scores, on="game_id", how="left")
+    merged["gameday"] = pd.to_datetime(merged["gameday"])
+    merged["is_final"] = merged["home_score"].notna()
+
+    actual_margin = merged["home_score"] - merged["away_score"]
+    actual_winner = np.where(
+        merged["home_score"] > merged["away_score"], "home",
+        np.where(merged["away_score"] > merged["home_score"], "away", "tie"),
+    )
+    winner_correct = (
+        ((merged["pred_margin"] > 0) & (actual_winner == "home")) |
+        ((merged["pred_margin"] < 0) & (actual_winner == "away"))
+    )
+    has_spread = merged["open_spread_line"].notna()
+    covered_home = (actual_margin - merged["open_spread_line"]) > 0
+    leans_home = (merged["pred_margin"] - merged["open_spread_line"]) > 0
+    spread_hit = np.where(leans_home, covered_home, ~covered_home)
+    covered_own = (actual_margin - merged["pred_margin"]) > 0
+    leans_home_own = merged["pred_margin"] > 0
+    beat_own = np.where(leans_home_own, covered_own, ~covered_own)
+
+    final = merged["is_final"]
+    merged["actual_margin"] = np.where(final, actual_margin, np.nan)
+    merged["winner_correct"] = [
+        (bool(v) if f else None) for v, f in zip(winner_correct, final)
+    ]
+    merged["spread_correct"] = [
+        (bool(v) if (f and hs) else None) for v, f, hs in zip(spread_hit, final, has_spread)
+    ]
+    merged["beat_own_line"] = [
+        (bool(v) if f else None) for v, f in zip(beat_own, final)
+    ]
+    return merged.sort_values("gameday")
+
+
 @st.cache_data(ttl=86400)
 def load_team_logos() -> dict:
     """team_abbr -> ESPN logo URL. Cached a full day since this almost
@@ -787,6 +858,7 @@ def main():
 
     with st.spinner("Loading completed games..."):
         completed = load_completed(config.CURRENT_SEASON, WEEK_TO_SHOW)
+        week_predictions = load_week_predictions(config.CURRENT_SEASON, WEEK_TO_SHOW)
 
     if not completed.empty:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -799,11 +871,13 @@ def main():
         for _, row in completed.iterrows():
             st.markdown(render_result_card(row, team_logos, bets), unsafe_allow_html=True)
 
+    if not week_predictions.empty:
         st.markdown(f"##### Model Results Summary — Week {WEEK_TO_SHOW}")
-        st.markdown(render_model_results_table(completed), unsafe_allow_html=True)
+        st.caption("Still-pending games (not yet final) show TBD rather than being left out.")
+        st.markdown(render_model_results_table(week_predictions), unsafe_allow_html=True)
 
         st.markdown("##### Our Prediction vs. Market Favorite-Size Bucket")
-        st.markdown(render_bucket_discrepancy_section(completed, feature_cols), unsafe_allow_html=True)
+        st.markdown(render_bucket_discrepancy_section(week_predictions, feature_cols), unsafe_allow_html=True)
 
     if not bets.empty and (bets["week"] == WEEK_TO_SHOW).any():
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
