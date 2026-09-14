@@ -468,6 +468,80 @@ def render_model_results_table(completed: pd.DataFrame) -> str:
     )
 
 
+FAVORITE_BUCKETS = ["Short fav (<=3)", "Middle (3-7)", "Large fav (7+)"]
+
+
+def _favorite_bucket(abs_margin: float) -> str:
+    if abs_margin >= 7:
+        return "Large fav (7+)"
+    if abs_margin <= 3:
+        return "Short fav (<=3)"
+    return "Middle (3-7)"
+
+
+def _bucket_stats(df: pd.DataFrame, pred_margin_col: str, winner_col: str, spread_col: str) -> dict:
+    """Returns {bucket_label: (n, ml_acc, ats_acc)} using the same bucketing
+    (by |predicted margin|) and accuracy math as the winner/spread table
+    above -- see dashboard_feedback: winner and spread are always tracked
+    as two separate numbers, never collapsed into one."""
+    d = df.copy()
+    d["_bucket"] = d[pred_margin_col].abs().apply(_favorite_bucket)
+    out = {}
+    for b in FAVORITE_BUCKETS:
+        g = d[d["_bucket"] == b]
+        if g.empty:
+            out[b] = (0, None, None)
+            continue
+        ats = g[spread_col].dropna()
+        ats_acc = ats.mean() if not ats.empty else None
+        out[b] = (len(g), g[winner_col].mean(), ats_acc)
+    return out
+
+
+@st.cache_data(ttl=3600)
+def load_holdout_bucket_breakdown(feature_cols):
+    """Same favorite-size breakdown as the current week, but over the full
+    2025 holdout season (249 games) -- a much more reliable sample than a
+    single week, shown alongside it for context."""
+    model, calibrator, _ = load_model_artifacts()
+    df = pd.read_parquet(config.PROCESSED_DATA_DIR / "game_level_features.parquet")
+    _, test, _ = prepare_data(df)
+    predicted = predict(test, feature_cols)
+    predicted["winner_correct"] = (predicted["pred_margin"] > 0).astype(int) == predicted["home_win"]
+    covered_home = (predicted["actual_margin"] - predicted["spread_line"]) > 0
+    leans_home = (predicted["pred_margin"] - predicted["spread_line"]) > 0
+    predicted["spread_correct"] = np.where(leans_home, covered_home, ~covered_home)
+    return _bucket_stats(predicted, "pred_margin", "winner_correct", "spread_correct")
+
+
+def render_favorite_bucket_table(completed: pd.DataFrame, feature_cols) -> str:
+    if completed.empty:
+        return ""
+    week_stats = _bucket_stats(completed, "pred_margin", "winner_correct", "spread_correct")
+    holdout_stats = load_holdout_bucket_breakdown(feature_cols)
+
+    def cell(stats, b):
+        n, ml, ats = stats[b]
+        if n == 0:
+            return "n/a"
+        ml_str = f"{ml:.0%}" if ml is not None else "n/a"
+        ats_str = f"{ats:.0%}" if ats is not None else "n/a"
+        return f"ML {ml_str} / ATS {ats_str} (n={n})"
+
+    rows = "".join(
+        f'<tr><td><b>{b}</b></td><td>{cell(week_stats, b)}</td><td>{cell(holdout_stats, b)}</td></tr>'
+        for b in FAVORITE_BUCKETS
+    )
+    return (
+        '<div class="bets-table-wrap"><table class="bets-table results-table">'
+        '<thead><tr><th>Predicted Favorite Size</th><th>This Week</th>'
+        '<th>2025 Holdout (249 games, reference)</th></tr></thead>'
+        f'<tbody>{rows}</tbody></table>'
+        '<div class="bets-summary-footer">Bucketed by |predicted margin| at prediction time. '
+        'This week\'s sample is small per bucket -- the holdout column is the more reliable read.</div></div>'
+    )
+
+
 def render_bets_summary_table(bets: pd.DataFrame, week: int) -> str:
     view = bets[bets["week"] == week].sort_values(["result", "team"])
     if view.empty:
@@ -652,6 +726,9 @@ def main():
 
         st.markdown(f"##### Model Results Summary — Week {WEEK_TO_SHOW}")
         st.markdown(render_model_results_table(completed), unsafe_allow_html=True)
+
+        st.markdown("##### Model Accuracy by Predicted Favorite Size")
+        st.markdown(render_favorite_bucket_table(completed, feature_cols), unsafe_allow_html=True)
 
     if not bets.empty and (bets["week"] == WEEK_TO_SHOW).any():
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
