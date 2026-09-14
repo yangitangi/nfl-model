@@ -419,6 +419,35 @@ def render_bets_block(game_id: str, bets: pd.DataFrame) -> str:
     return f'<div class="my-bets"><div class="my-bets-label">MY BETS</div>{"".join(badges)}</div>'
 
 
+def _use_live_predictions_for_pending(week_predictions: pd.DataFrame, live: pd.DataFrame) -> pd.DataFrame:
+    """For a game that hasn't been played yet, prefer the CURRENT live
+    prediction (this page load's model run + market line) over whatever
+    was frozen in prediction_log at snapshot time. The frozen snapshot
+    exists so an already-PLAYED game grades against an honest, unmoving
+    "what we called before kickoff" -- but for a game that hasn't
+    happened, showing a stale number (e.g. from before a QB-attribution
+    fix, or before this week's injury report existed) is just confusing,
+    not more honest, and would silently disagree with the live number
+    already shown in the upcoming-game card above it on the same page."""
+    if week_predictions.empty or live.empty:
+        return week_predictions
+    wp = week_predictions.copy()
+    live_by_game = live.set_index("game_id")
+    col_map = {
+        "pred_margin": "pred_margin", "pred_home_win_prob": "pred_home_win_prob",
+        "open_spread_line": "spread_line", "open_home_moneyline": "home_moneyline",
+        "open_away_moneyline": "away_moneyline",
+    }
+    pending_idx = wp.index[~wp["is_final"]]
+    for idx in pending_idx:
+        gid = wp.at[idx, "game_id"]
+        if gid not in live_by_game.index:
+            continue
+        for wp_col, live_col in col_map.items():
+            wp.at[idx, wp_col] = live_by_game.at[gid, live_col]
+    return wp
+
+
 def render_model_results_table(week_predictions: pd.DataFrame) -> str:
     """Consolidated table version of the per-card RESULT block already
     shown in the Completed Games cards above -- same winner/spread split,
@@ -833,6 +862,7 @@ def main():
         upcoming = load_upcoming(config.CURRENT_SEASON)
 
     week_games = upcoming[upcoming["week"] == WEEK_TO_SHOW] if not upcoming.empty else upcoming
+    predicted = pd.DataFrame()
 
     if week_games.empty:
         st.info(f"No upcoming games left in Week {WEEK_TO_SHOW} -- everything's been played.")
@@ -859,6 +889,7 @@ def main():
     with st.spinner("Loading completed games..."):
         completed = load_completed(config.CURRENT_SEASON, WEEK_TO_SHOW)
         week_predictions = load_week_predictions(config.CURRENT_SEASON, WEEK_TO_SHOW)
+        week_predictions = _use_live_predictions_for_pending(week_predictions, predicted)
 
     if not completed.empty:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -873,7 +904,12 @@ def main():
 
     if not week_predictions.empty:
         st.markdown(f"##### Model Results Summary — Week {WEEK_TO_SHOW}")
-        st.caption("Still-pending games (not yet final) show TBD rather than being left out.")
+        st.caption(
+            "Still-pending games show TBD rather than being left out, and use today's LIVE "
+            "prediction/market line (matching the upcoming-game card above) rather than a "
+            "possibly-stale snapshot -- already-final games below still use the frozen "
+            "snapshot from before kickoff, which is what they were actually graded against."
+        )
         st.markdown(render_model_results_table(week_predictions), unsafe_allow_html=True)
 
         st.markdown("##### Our Prediction vs. Market Favorite-Size Bucket")
