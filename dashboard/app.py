@@ -182,6 +182,26 @@ CARD_CSS = """
 .bet-loss { background: rgba(255, 82, 82, 0.17); color: #ff6b6b; }
 .bet-push { background: rgba(154, 162, 182, 0.16); color: #9aa2b6; }
 .bet-pending { background: rgba(255, 176, 32, 0.16); color: #ffb020; }
+.bets-table-wrap {
+    background: linear-gradient(135deg, #2a3552 0%, #232d46 100%);
+    border-radius: 16px; border: 1px solid rgba(255,255,255,0.09);
+    padding: 1.1rem 1.4rem 1.3rem 1.4rem; overflow-x: auto;
+}
+.bets-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.bets-table th {
+    text-align: left; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+    color: #6d7690; padding: 0.4rem 0.7rem; border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+.bets-table td { padding: 0.55rem 0.7rem; color: #ccd2e0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.bets-table td b { color: #f2f4f8; }
+.bets-summary-footer {
+    margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid rgba(255,255,255,0.09);
+    font-size: 0.95rem; color: #f2f4f8;
+}
+.results-table th { text-align: left; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+    color: #6d7690; padding: 0.4rem 0.7rem; border-bottom: 1px solid rgba(255,255,255,0.12); }
+.results-table td { padding: 0.55rem 0.7rem; color: #ccd2e0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.results-table td b { color: #f2f4f8; }
 .game-footer {
     margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid rgba(255,255,255,0.09);
     font-size: 0.76rem; color: #8892a8;
@@ -397,6 +417,94 @@ def render_bets_block(game_id: str, bets: pd.DataFrame) -> str:
     return f'<div class="my-bets"><div class="my-bets-label">MY BETS</div>{"".join(badges)}</div>'
 
 
+def render_model_results_table(completed: pd.DataFrame) -> str:
+    """Consolidated table version of the per-card RESULT block already
+    shown in the Completed Games cards above -- same winner/spread split,
+    just all in one place for a week-at-a-glance view."""
+    if completed.empty:
+        return ""
+
+    def badge(correct) -> str:
+        if correct is None:
+            return '<span class="edge-badge">n/a</span>'
+        cls = "result-correct" if correct else "result-wrong"
+        label = "Correct" if correct else "Wrong"
+        return f'<span class="edge-badge {cls}">{label}</span>'
+
+    rows = []
+    for _, r in completed.sort_values("gameday").iterrows():
+        pred_spread = format_spread(r["home_team"], r["away_team"], r["pred_margin"])
+        actual_spread = format_spread(r["home_team"], r["away_team"], r["actual_margin"])
+        winner_badge = badge(bool(r["winner_correct"]))
+        spread_correct = None if pd.isna(r["spread_correct"]) else bool(r["spread_correct"])
+        spread_badge = badge(spread_correct)
+        rows.append(
+            f'<tr><td>{r["away_team"]} @ <b>{r["home_team"]}</b></td>'
+            f'<td>{pred_spread}</td>'
+            f'<td>{r["pred_home_win_prob"]*100:.0f}% {r["home_team"]}</td>'
+            f'<td><b>{r["away_score"]:.0f}&ndash;{r["home_score"]:.0f}</b> ({actual_spread})</td>'
+            f'<td>{winner_badge}</td>'
+            f'<td>{spread_badge}</td></tr>'
+        )
+
+    n = len(completed)
+    win_acc = completed["winner_correct"].mean()
+    ats_valid = completed["spread_correct"].dropna()
+    ats_acc = ats_valid.mean() if not ats_valid.empty else None
+    ats_str = f"{ats_acc:.0%}" if ats_acc is not None else "n/a"
+
+    # Every line of this HTML block must stay unindented with no blank
+    # lines -- Streamlit's markdown pass (even with unsafe_allow_html)
+    # treats an indented line or a blank-line gap inside the block as an
+    # indented code fence and stops rendering it as real HTML partway
+    # through, which silently truncated this table to one row before.
+    return (
+        '<div class="bets-table-wrap"><table class="bets-table results-table">'
+        '<thead><tr><th>Game</th><th>Predicted Spread</th><th>Predicted ML</th>'
+        '<th>Actual (Margin)</th><th>Winner Call</th><th>Spread Call</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table>'
+        f'<div class="bets-summary-footer">Winner accuracy: <b>{win_acc:.0%}</b> ({n} games) '
+        f'&middot; Spread (ATS) accuracy: <b>{ats_str}</b></div></div>'
+    )
+
+
+def render_bets_summary_table(bets: pd.DataFrame, week: int) -> str:
+    view = bets[bets["week"] == week].sort_values(["result", "team"])
+    if view.empty:
+        return ""
+
+    rows = []
+    for _, b in view.iterrows():
+        line_str = f"{b['line']:+g}" if pd.notna(b.get("line")) else ""
+        cls = BET_RESULT_CLASS.get(b["result"], "bet-pending")
+        icon = BET_RESULT_ICON.get(b["result"], "?")
+        rows.append(
+            f'<tr><td>{b["week"]}</td><td><b>{b["team"]}</b></td><td>{b["bet_type"]}</td>'
+            f'<td>{line_str}</td><td>{b["opponent"]}</td>'
+            f'<td><span class="bet-badge {cls}">{icon} {b["result"]}</span></td></tr>'
+        )
+
+    graded = view[view["result"].isin(["win", "loss", "push"])]
+    w = int((graded["result"] == "win").sum())
+    l = int((graded["result"] == "loss").sum())
+    p = int((graded["result"] == "push").sum())
+    pending = int((view["result"] == "pending").sum())
+    decided = w + l
+    win_pct = f"{w / decided:.1%}" if decided else "n/a"
+    pending_str = f" &middot; {pending} still pending" if pending else ""
+
+    # See the comment in render_model_results_table: this block must stay
+    # one unindented, blank-line-free run of HTML or Streamlit's markdown
+    # pass truncates it into a code block partway through.
+    return (
+        '<div class="bets-table-wrap"><table class="bets-table">'
+        '<thead><tr><th>Week</th><th>Team</th><th>Type</th><th>Line</th><th>Opp</th><th>Result</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table>'
+        f'<div class="bets-summary-footer">Record: <b>{w}-{l}-{p}</b> '
+        f'({win_pct} of decided bets){pending_str}</div></div>'
+    )
+
+
 @st.cache_resource
 def load_model_artifacts():
     return _load_model_artifacts()
@@ -541,6 +649,14 @@ def main():
         )
         for _, row in completed.iterrows():
             st.markdown(render_result_card(row, team_logos, bets), unsafe_allow_html=True)
+
+        st.markdown(f"##### Model Results Summary — Week {WEEK_TO_SHOW}")
+        st.markdown(render_model_results_table(completed), unsafe_allow_html=True)
+
+    if not bets.empty and (bets["week"] == WEEK_TO_SHOW).any():
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.subheader(f"My Bets — Week {WEEK_TO_SHOW} Summary")
+        st.markdown(render_bets_summary_table(bets, WEEK_TO_SHOW), unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
