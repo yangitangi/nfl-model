@@ -479,28 +479,41 @@ def _favorite_bucket(abs_margin: float) -> str:
     return "Middle (3-7)"
 
 
-def _bucket_stats(df: pd.DataFrame, pred_margin_col: str, winner_col: str, spread_col: str) -> dict:
-    """Returns {bucket_label: (n, ml_acc, ats_acc)} using the same bucketing
-    (by |predicted margin|) and accuracy math as the winner/spread table
-    above -- see dashboard_feedback: winner and spread are always tracked
-    as two separate numbers, never collapsed into one."""
+def _add_bucket_cols(df: pd.DataFrame, pred_col: str, market_col: str) -> pd.DataFrame:
+    """Tags each game with OUR predicted favorite-size bucket, the
+    MARKET's own bucket (from the same-magnitude spread line), the edge
+    between the two, and whether the buckets agree -- e.g. we predict a
+    7+ pt favorite while the market has the same team as only a -3
+    favorite is a bucket MISMATCH, which a table bucketed only on our own
+    prediction (the old version of this table) couldn't distinguish from
+    a game where we and the market both saw a big favorite."""
     d = df.copy()
-    d["_bucket"] = d[pred_margin_col].abs().apply(_favorite_bucket)
+    d["_our_bucket"] = d[pred_col].abs().apply(_favorite_bucket)
+    d["_market_bucket"] = d[market_col].abs().apply(_favorite_bucket)
+    d["_edge"] = d[pred_col] - d[market_col]
+    d["_bucket_match"] = d["_our_bucket"] == d["_market_bucket"]
+    return d
+
+
+def _agreement_stats(df: pd.DataFrame, winner_col: str, spread_col: str) -> dict:
+    """Returns {'Agree': (n, ml_acc, ats_acc), 'Mismatch': (...)} -- winner
+    and spread accuracy kept as two separate numbers throughout, never
+    collapsed into one 'correct?' column."""
     out = {}
-    for b in FAVORITE_BUCKETS:
-        g = d[d["_bucket"] == b]
+    for label, mask in [("Agree", df["_bucket_match"]), ("Mismatch", ~df["_bucket_match"])]:
+        g = df[mask]
         if g.empty:
-            out[b] = (0, None, None)
+            out[label] = (0, None, None)
             continue
         ats = g[spread_col].dropna()
         ats_acc = ats.mean() if not ats.empty else None
-        out[b] = (len(g), g[winner_col].mean(), ats_acc)
+        out[label] = (len(g), g[winner_col].mean(), ats_acc)
     return out
 
 
 @st.cache_data(ttl=3600)
-def load_holdout_bucket_breakdown(feature_cols):
-    """Same favorite-size breakdown as the current week, but over the full
+def load_holdout_agreement_breakdown(feature_cols):
+    """Same agree-vs-mismatch split as the current week, but over the full
     2025 holdout season (249 games) -- a much more reliable sample than a
     single week, shown alongside it for context."""
     model, calibrator, _ = load_model_artifacts()
@@ -511,34 +524,75 @@ def load_holdout_bucket_breakdown(feature_cols):
     covered_home = (predicted["actual_margin"] - predicted["spread_line"]) > 0
     leans_home = (predicted["pred_margin"] - predicted["spread_line"]) > 0
     predicted["spread_correct"] = np.where(leans_home, covered_home, ~covered_home)
-    return _bucket_stats(predicted, "pred_margin", "winner_correct", "spread_correct")
+    predicted = _add_bucket_cols(predicted, "pred_margin", "spread_line")
+    return _agreement_stats(predicted, "winner_correct", "spread_correct")
 
 
-def render_favorite_bucket_table(completed: pd.DataFrame, feature_cols) -> str:
+def render_bucket_discrepancy_section(completed: pd.DataFrame, feature_cols) -> str:
+    """Two parts: a per-game log of OUR predicted favorite-size bucket vs.
+    the MARKET's bucket (sorted by |edge| so the biggest disagreements are
+    on top), then an Agree-vs-Mismatch accuracy summary for this week and
+    the 2025 holdout."""
     if completed.empty:
         return ""
-    week_stats = _bucket_stats(completed, "pred_margin", "winner_correct", "spread_correct")
-    holdout_stats = load_holdout_bucket_breakdown(feature_cols)
+    tagged = _add_bucket_cols(completed, "pred_margin", "open_spread_line")
+    tagged = tagged.sort_values("_edge", key=lambda s: s.abs(), ascending=False)
 
-    def cell(stats, b):
-        n, ml, ats = stats[b]
+    def badge(correct) -> str:
+        if correct is None:
+            return '<span class="edge-badge">n/a</span>'
+        cls = "result-correct" if correct else "result-wrong"
+        return f'<span class="edge-badge {cls}">{"Correct" if correct else "Wrong"}</span>'
+
+    log_rows = []
+    for _, r in tagged.iterrows():
+        our_spread = format_spread(r["home_team"], r["away_team"], r["pred_margin"])
+        mkt_spread = format_spread(r["home_team"], r["away_team"], r["open_spread_line"])
+        match_badge = ('<span class="bet-badge bet-win">match</span>' if r["_bucket_match"]
+                        else '<span class="bet-badge bet-loss">mismatch</span>')
+        spread_correct = None if pd.isna(r["spread_correct"]) else bool(r["spread_correct"])
+        log_rows.append(
+            f'<tr><td>{r["away_team"]} @ <b>{r["home_team"]}</b></td>'
+            f'<td>{our_spread} <span class="sub">({r["_our_bucket"]})</span></td>'
+            f'<td>{mkt_spread} <span class="sub">({r["_market_bucket"]})</span></td>'
+            f'<td>{r["_edge"]:+.1f} pts</td>'
+            f'<td>{match_badge}</td>'
+            f'<td>{badge(bool(r["winner_correct"]))}</td>'
+            f'<td>{badge(spread_correct)}</td></tr>'
+        )
+
+    week_stats = _agreement_stats(tagged, "winner_correct", "spread_correct")
+    holdout_stats = load_holdout_agreement_breakdown(feature_cols)
+
+    def cell(stats, label):
+        n, ml, ats = stats[label]
         if n == 0:
             return "n/a"
         ml_str = f"{ml:.0%}" if ml is not None else "n/a"
         ats_str = f"{ats:.0%}" if ats is not None else "n/a"
         return f"ML {ml_str} / ATS {ats_str} (n={n})"
 
-    rows = "".join(
-        f'<tr><td><b>{b}</b></td><td>{cell(week_stats, b)}</td><td>{cell(holdout_stats, b)}</td></tr>'
-        for b in FAVORITE_BUCKETS
+    summary_rows = "".join(
+        f'<tr><td><b>{label}</b></td><td>{cell(week_stats, label)}</td><td>{cell(holdout_stats, label)}</td></tr>'
+        for label in ["Agree", "Mismatch"]
     )
+
     return (
         '<div class="bets-table-wrap"><table class="bets-table results-table">'
-        '<thead><tr><th>Predicted Favorite Size</th><th>This Week</th>'
+        '<thead><tr><th>Game</th><th>Our Predicted Spread (bucket)</th>'
+        '<th>Market Spread (bucket)</th><th>Edge</th><th>Bucket</th>'
+        '<th>Winner Call</th><th>Spread Call</th></tr></thead>'
+        f'<tbody>{"".join(log_rows)}</tbody></table>'
+        '<div class="bets-summary-footer">Sorted by |edge| (our predicted spread minus the market '
+        'spread) -- biggest disagreements first. A "mismatch" means our own predicted favorite-size '
+        'bucket differs from the market\'s, e.g. we call a 7+ pt favorite on a team the market only '
+        'has at -3.</div></div>'
+        '<div class="bets-table-wrap" style="margin-top:0.9rem;"><table class="bets-table results-table">'
+        '<thead><tr><th>Bucket vs. Market</th><th>This Week</th>'
         '<th>2025 Holdout (249 games, reference)</th></tr></thead>'
-        f'<tbody>{rows}</tbody></table>'
-        '<div class="bets-summary-footer">Bucketed by |predicted margin| at prediction time. '
-        'This week\'s sample is small per bucket -- the holdout column is the more reliable read.</div></div>'
+        f'<tbody>{summary_rows}</tbody></table>'
+        '<div class="bets-summary-footer">Does the model do better or worse specifically when it '
+        'disagrees with the market\'s favorite-size read, vs. when they agree?</div></div>'
     )
 
 
@@ -727,8 +781,8 @@ def main():
         st.markdown(f"##### Model Results Summary — Week {WEEK_TO_SHOW}")
         st.markdown(render_model_results_table(completed), unsafe_allow_html=True)
 
-        st.markdown("##### Model Accuracy by Predicted Favorite Size")
-        st.markdown(render_favorite_bucket_table(completed, feature_cols), unsafe_allow_html=True)
+        st.markdown("##### Our Prediction vs. Market Favorite-Size Bucket")
+        st.markdown(render_bucket_discrepancy_section(completed, feature_cols), unsafe_allow_html=True)
 
     if not bets.empty and (bets["week"] == WEEK_TO_SHOW).any():
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
