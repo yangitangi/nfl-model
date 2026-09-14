@@ -344,6 +344,7 @@ def render_result_card(row, team_logos: dict, bets: pd.DataFrame = None) -> str:
 
     winner_badge = badge(bool(row["winner_correct"]))
     spread_badge = badge(None if row["spread_correct"] is None else bool(row["spread_correct"]))
+    own_line_badge = badge(bool(row["beat_own_line"]))
 
     final_score = (f"{row['away_team']} {row['away_score']:.0f} &ndash; "
                    f"{row['home_team']} {row['home_score']:.0f}")
@@ -381,6 +382,7 @@ def render_result_card(row, team_logos: dict, bets: pd.DataFrame = None) -> str:
           <div class="final-score">{final_score}</div>
           <div class="stat-line">Winner call: {winner_badge}</div>
           <div class="stat-line">Spread call: {spread_badge}</div>
+          <div class="stat-line">Beat own line: {own_line_badge} <span class="sub">(ref. only)</span></div>
         </div>
       </div>
       {render_bets_block(row['game_id'], bets) if bets is not None else ""}
@@ -438,13 +440,15 @@ def render_model_results_table(completed: pd.DataFrame) -> str:
         winner_badge = badge(bool(r["winner_correct"]))
         spread_correct = None if pd.isna(r["spread_correct"]) else bool(r["spread_correct"])
         spread_badge = badge(spread_correct)
+        own_line_badge = badge(bool(r["beat_own_line"]))
         rows.append(
             f'<tr><td>{r["away_team"]} @ <b>{r["home_team"]}</b></td>'
             f'<td>{pred_spread}</td>'
             f'<td>{r["pred_home_win_prob"]*100:.0f}% {r["home_team"]}</td>'
             f'<td><b>{r["away_score"]:.0f}&ndash;{r["home_score"]:.0f}</b> ({actual_spread})</td>'
             f'<td>{winner_badge}</td>'
-            f'<td>{spread_badge}</td></tr>'
+            f'<td>{spread_badge}</td>'
+            f'<td>{own_line_badge}</td></tr>'
         )
 
     n = len(completed)
@@ -452,6 +456,7 @@ def render_model_results_table(completed: pd.DataFrame) -> str:
     ats_valid = completed["spread_correct"].dropna()
     ats_acc = ats_valid.mean() if not ats_valid.empty else None
     ats_str = f"{ats_acc:.0%}" if ats_acc is not None else "n/a"
+    own_line_acc = completed["beat_own_line"].mean()
 
     # Every line of this HTML block must stay unindented with no blank
     # lines -- Streamlit's markdown pass (even with unsafe_allow_html)
@@ -461,10 +466,12 @@ def render_model_results_table(completed: pd.DataFrame) -> str:
     return (
         '<div class="bets-table-wrap"><table class="bets-table results-table">'
         '<thead><tr><th>Game</th><th>Predicted Spread</th><th>Predicted ML</th>'
-        '<th>Actual (Margin)</th><th>Winner Call</th><th>Spread Call</th></tr></thead>'
+        '<th>Actual (Margin)</th><th>Winner Call</th><th>Spread Call</th>'
+        '<th>Beat Own Line <span class="sub">(ref.)</span></th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table>'
         f'<div class="bets-summary-footer">Winner accuracy: <b>{win_acc:.0%}</b> ({n} games) '
-        f'&middot; Spread (ATS) accuracy: <b>{ats_str}</b></div></div>'
+        f'&middot; Spread (ATS) vs. market accuracy: <b>{ats_str}</b> '
+        f'&middot; Beat own line (reference, not vs. market): <b>{own_line_acc:.0%}</b></div></div>'
     )
 
 
@@ -694,6 +701,20 @@ def load_completed(season: int, week: int) -> pd.DataFrame:
     completed["spread_correct"] = [
         (bool(hit) if has else None) for hit, has in zip(spread_hit, has_spread)
     ]
+
+    # "Beat our own line" -- a SEPARATE question from spread_correct above.
+    # spread_correct asks "did disagreeing with the MARKET's real, bettable
+    # line pay off" (leans relative to open_spread_line); this asks "was
+    # our own predicted margin, taken as a line on its own, an accurate
+    # call" (leans relative to pred_margin itself). They can diverge on a
+    # near-tie game: e.g. we predict MIN -1.2 vs. a market of MIN -1.5 --
+    # if MIN wins by 17, our own number is trivially beaten (correct here)
+    # even though our tiny lean away from the market's specific number
+    # graded as wrong under spread_correct.
+    covered_own = (actual_margin - completed["pred_margin"]) > 0
+    leans_home_own = completed["pred_margin"] > 0
+    completed["beat_own_line"] = np.where(leans_home_own, covered_own, ~covered_own)
+
     return completed.sort_values("gameday")
 
 
