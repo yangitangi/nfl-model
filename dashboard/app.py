@@ -36,9 +36,9 @@ st.set_page_config(page_title="NFL Game Predictions", page_icon="\U0001F3C8", la
 # selectbox for now — Streamlit's selectbox widget wasn't behaving in
 # testing. NFL "weeks" span Wed/Thu through Sun/Mon, so don't bump this
 # just because one game in the week has been played -- only bump once
-# the whole week is done (mistakenly bumped to 2 after just the Wed
-# opener; reverted -- Week 1 still had 15 of 16 games upcoming).
-WEEK_TO_SHOW = 1
+# the whole week is done. Week 1 finished 16/16 (13-3 winner, 8-8 ATS)
+# before this was bumped to 2.
+WEEK_TO_SHOW = 2
 
 # "Notable edge" thresholds — just a display cue, not a betting signal.
 # The model currently trails Vegas on the 2025 holdout (see metrics below),
