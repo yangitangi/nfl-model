@@ -395,6 +395,26 @@ def add_qb_starter_form(team_game_rolled: pd.DataFrame, qb_player_game: pd.DataF
     return team_game_rolled
 
 
+def _load_qb_starter_overrides(season: int) -> pd.DataFrame:
+    """
+    Manual, human-confirmed corrections to the depth chart for cases it
+    hasn't caught up to yet -- e.g. a team officially rules a starter out
+    and names a replacement mid-week, before nflverse's depth chart
+    snapshot reflects it (confirmed via real news, not something this
+    pipeline can detect on its own). Takes priority over the depth chart
+    for any team listed here. Remove a team's row once the depth chart
+    (or reality) catches up; there is no week column since this feeds
+    the same "one snapshot per team, applied to all that team's upcoming
+    games" mechanism get_current_qb_starters already uses.
+    """
+    path = config.OUTPUTS_DIR / "qb_starter_overrides.csv"
+    if not path.exists():
+        return pd.DataFrame(columns=["team", "passer_player_id"])
+    overrides = pd.read_csv(path)
+    overrides = overrides[overrides["season"] == season]
+    return overrides[["team", "passer_player_id"]]
+
+
 def get_current_qb_starters(season: int, force_refresh: bool = True) -> pd.DataFrame:
     """
     Each team's CURRENT starting QB per the official depth chart (pos_rank
@@ -405,15 +425,27 @@ def get_current_qb_starters(season: int, force_refresh: bool = True) -> pd.DataF
     fallback used elsewhere in this file) is only a proxy for that, and a
     wrong one whenever there's been a trade, a free-agent signing, a
     benching, or a backup mopping up a meaningless finale.
+
+    Manual overrides (see _load_qb_starter_overrides) take priority over
+    the depth chart, for the cases even the depth chart hasn't caught up
+    to yet.
     """
     depth_chart = fetch_depth_chart(season, force_refresh=force_refresh)
     if depth_chart.empty:
-        return pd.DataFrame(columns=["team", "passer_player_id"])
-    qb1 = depth_chart[(depth_chart["pos_abb"] == "QB") & (depth_chart["pos_rank"] == 1)]
-    if qb1.empty:
-        return pd.DataFrame(columns=["team", "passer_player_id"])
-    latest = qb1.sort_values("dt").groupby("team").last().reset_index()
-    return latest[["team", "gsis_id"]].rename(columns={"gsis_id": "passer_player_id"})
+        starters = pd.DataFrame(columns=["team", "passer_player_id"])
+    else:
+        qb1 = depth_chart[(depth_chart["pos_abb"] == "QB") & (depth_chart["pos_rank"] == 1)]
+        if qb1.empty:
+            starters = pd.DataFrame(columns=["team", "passer_player_id"])
+        else:
+            latest = qb1.sort_values("dt").groupby("team").last().reset_index()
+            starters = latest[["team", "gsis_id"]].rename(columns={"gsis_id": "passer_player_id"})
+
+    overrides = _load_qb_starter_overrides(season)
+    if overrides.empty:
+        return starters
+    starters = starters[~starters["team"].isin(overrides["team"])]
+    return pd.concat([starters, overrides], ignore_index=True)
 
 
 def _majority_starter_asof(primary: pd.DataFrame) -> pd.DataFrame:
