@@ -171,6 +171,14 @@ CARD_CSS = """
     margin-top: 0.8rem; padding-top: 0.7rem; border-top: 1px dashed rgba(255,255,255,0.14);
     font-size: 0.8rem; color: #9aa2b6;
 }
+.analyst-note {
+    margin-top: 0.8rem; padding: 0.7rem 0.9rem; border-radius: 10px;
+    background: rgba(255, 176, 32, 0.09); border: 1px solid rgba(255, 176, 32, 0.25);
+    font-size: 0.8rem; color: #d9c9a8; line-height: 1.5;
+}
+.analyst-note-label {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; color: #ffb020; margin-bottom: 0.35rem;
+}
 .my-bets-label {
     font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; color: #6d7690; margin-bottom: 0.4rem;
 }
@@ -251,7 +259,7 @@ def team_logo_img(team: str, team_logos: dict) -> str:
     return f'<img class="team-logo" src="{url}" alt="{team}">' if url else ""
 
 
-def render_game_card(row, team_logos: dict, bets: pd.DataFrame = None) -> str:
+def render_game_card(row, team_logos: dict, bets: pd.DataFrame = None, notes: pd.DataFrame = None) -> str:
     away_color = TEAM_COLORS.get(row["away_team"], "#5b6478")
     home_color = TEAM_COLORS.get(row["home_team"], "#5b6478")
     div_badge = '<span class="div-badge">Division game</span>' if row["div_game"] else ""
@@ -318,6 +326,7 @@ def render_game_card(row, team_logos: dict, bets: pd.DataFrame = None) -> str:
         </div>
       </div>
       <div class="game-footer">{format_weather(row)} &middot; Rest: {row['home_team']} {row['home_rest_days']}d / {row['away_team']} {row['away_rest_days']}d</div>
+      {render_analyst_note_block(row['game_id'], notes) if notes is not None else ""}
       {render_bets_block(row['game_id'], bets) if bets is not None else ""}
     </div>
     """
@@ -417,6 +426,27 @@ def render_bets_block(game_id: str, bets: pd.DataFrame) -> str:
         icon = BET_RESULT_ICON.get(b["result"], "?")
         badges.append(f'<span class="bet-badge {cls}">{label} {icon}</span>')
     return f'<div class="my-bets"><div class="my-bets-label">MY BETS</div>{"".join(badges)}</div>'
+
+
+@st.cache_data(ttl=300)
+def load_analyst_notes() -> pd.DataFrame:
+    """Manual, human-written caveats on a specific game's prediction (e.g.
+    a weather call, or a known model-quirk explanation) -- deliberately
+    NOT a change to the model's own stored prediction, which stays
+    untouched for honest grading. This is a separate, clearly-labeled
+    annotation layer only, added by hand per game as needed."""
+    path = config.OUTPUTS_DIR / "analyst_notes.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
+def render_analyst_note_block(game_id: str, notes: pd.DataFrame) -> str:
+    game_notes = notes[notes["game_id"] == game_id] if not notes.empty else notes
+    if game_notes.empty:
+        return ""
+    items = "".join(f'<div>{n["note"]}</div>' for _, n in game_notes.iterrows())
+    return f'<div class="analyst-note"><div class="analyst-note-label">ANALYST NOTE</div>{items}</div>'
 
 
 def _use_live_predictions_for_pending(week_predictions: pd.DataFrame, live: pd.DataFrame) -> pd.DataFrame:
@@ -857,6 +887,7 @@ def main():
 
     team_logos = load_team_logos()
     bets = load_bets()
+    notes = load_analyst_notes()
 
     with st.spinner(f"Building features for {config.CURRENT_SEASON} Week {WEEK_TO_SHOW}..."):
         upcoming = load_upcoming(config.CURRENT_SEASON)
@@ -884,7 +915,7 @@ def main():
             st.info("No games match the current filters.")
         else:
             for _, row in view.iterrows():
-                st.markdown(render_game_card(row, team_logos, bets), unsafe_allow_html=True)
+                st.markdown(render_game_card(row, team_logos, bets, notes), unsafe_allow_html=True)
 
     with st.spinner("Loading completed games..."):
         completed = load_completed(config.CURRENT_SEASON, WEEK_TO_SHOW)
