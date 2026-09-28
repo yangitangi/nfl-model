@@ -751,10 +751,12 @@ def get_bye_teams(schedule: pd.DataFrame, season: int, week: int) -> list[str]:
     return [t for t in all_teams if t not in playing]
 
 
-def render_schedule_card(row, team_logos: dict) -> str:
+def render_schedule_card(row, team_logos: dict, notes: pd.DataFrame = None) -> str:
     """Lightweight matchup card for a week we haven't run predictions for
     yet -- just who's playing, when, and the market line if one already
-    exists (some future weeks open lines early), with no model output."""
+    exists (some future weeks open lines early), with no model output.
+    Still shows analyst notes (e.g. a confirmed injury/QB-override) since
+    that context matters even before we're formally predicting the game."""
     away_color = TEAM_COLORS.get(row["away_team"], "#5b6478")
     home_color = TEAM_COLORS.get(row["home_team"], "#5b6478")
     div_badge = '<span class="div-badge">Division game</span>' if row["div_game"] else ""
@@ -763,13 +765,14 @@ def render_schedule_card(row, team_logos: dict) -> str:
                         f'{format_spread(row["home_team"], row["away_team"], row["spread_line"])}</b></div>')
     else:
         market_line = '<div class="stat-line sub">Line not posted yet</div>'
+    note_block = render_analyst_note_block(row["game_id"], notes) if notes is not None else ""
     return (
         f'<div class="game-card" style="--away-color:{away_color}; --home-color:{home_color};">'
         f'<div class="game-meta"><span>{row["gameday"].strftime("%a %b %d, %Y")}</span>{div_badge}</div>'
         f'<div class="matchup-title">{team_logo_img(row["away_team"], team_logos)}'
         f'<span class="team-away">{row["away_team"]}</span><span class="at-sep">@</span>'
         f'{team_logo_img(row["home_team"], team_logos)}<span class="team-home">{row["home_team"]}</span></div>'
-        f'{market_line}</div>'
+        f'{market_line}{note_block}</div>'
     )
 
 
@@ -979,7 +982,7 @@ def main():
         # no reason to run the full model before it's worth predicting.
         st.caption("Schedule only -- predictions haven't been run for this week yet.")
         for _, row in week_sched.sort_values("gameday").iterrows():
-            st.markdown(render_schedule_card(row, team_logos), unsafe_allow_html=True)
+            st.markdown(render_schedule_card(row, team_logos, notes), unsafe_allow_html=True)
 
     else:
         if week_choice == current_week and any_unplayed:
