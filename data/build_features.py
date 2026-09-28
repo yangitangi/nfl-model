@@ -406,13 +406,23 @@ def _load_qb_starter_overrides(season: int) -> pd.DataFrame:
     (or reality) catches up; there is no week column since this feeds
     the same "one snapshot per team, applied to all that team's upcoming
     games" mechanism get_current_qb_starters already uses.
+
+    Optional `bypass_recency` column (True/False, defaults False): lets
+    this specific override skip the normal >2-season staleness rejection
+    in snapshot_qb_starter_form -- for a confirmed 3rd/4th-string starter
+    whose own numbers are old but still the best available signal (the
+    alternative being an injured starter's much-better recent stats,
+    which would misrepresent the team worse than a stale-but-real sample).
     """
     path = config.OUTPUTS_DIR / "qb_starter_overrides.csv"
     if not path.exists():
-        return pd.DataFrame(columns=["team", "passer_player_id"])
+        return pd.DataFrame(columns=["team", "passer_player_id", "bypass_recency"])
     overrides = pd.read_csv(path)
-    overrides = overrides[overrides["season"] == season]
-    return overrides[["team", "passer_player_id"]]
+    overrides = overrides[overrides["season"] == season].copy()
+    if "bypass_recency" not in overrides.columns:
+        overrides["bypass_recency"] = False
+    overrides["bypass_recency"] = overrides["bypass_recency"].fillna(False).astype(bool)
+    return overrides[["team", "passer_player_id", "bypass_recency"]]
 
 
 def get_current_qb_starters(season: int, force_refresh: bool = True) -> pd.DataFrame:
@@ -440,6 +450,7 @@ def get_current_qb_starters(season: int, force_refresh: bool = True) -> pd.DataF
         else:
             latest = qb1.sort_values("dt").groupby("team").last().reset_index()
             starters = latest[["team", "gsis_id"]].rename(columns={"gsis_id": "passer_player_id"})
+    starters["bypass_recency"] = False
 
     overrides = _load_qb_starter_overrides(season)
     if overrides.empty:
@@ -533,6 +544,13 @@ def snapshot_qb_starter_form(team_game_rolled_with_asof: pd.DataFrame,
         resolved = starters.merge(player_asof, on="passer_player_id", how="left")
         resolved = resolved.merge(last_season_played, on="passer_player_id", how="left")
         stale = (season - resolved["last_season_played"]) > STARTER_RECENCY_SEASONS
+        # A manual override can explicitly bypass the recency guard -- for
+        # a confirmed starter whose own stats are stale but still the best
+        # available signal (e.g. a 3rd-string QB who hasn't played in
+        # years, where the alternative is an injured starter's much-better
+        # recent numbers, which would be a worse misrepresentation).
+        if "bypass_recency" in resolved.columns:
+            stale = stale & ~resolved["bypass_recency"].fillna(False)
         resolved.loc[stale.fillna(False), asof_cols] = np.nan
 
         result = fallback.merge(
