@@ -856,6 +856,153 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     return game_level
 
 
+def build_played_week_features(season: int, week: int) -> pd.DataFrame:
+    """
+    Builds a game-level feature row for each ALREADY-PLAYED REGULAR SEASON
+    game in `season`/`week` -- for retrospective grading when a week
+    wasn't snapshotted before kickoff (the normal, preferred path is
+    `tracking/prediction_tracker.py snapshot` beforehand, which freezes
+    the true pre-game prediction; this is the fallback for after the
+    fact). Same idea as build_playoff_features, generalized to a
+    regular-season week instead of the playoffs.
+
+    Leak-free the same way every other rolling feature in this file is:
+    each game's own entering-game snapshot is built via shift(1) BEFORE
+    that game, so a team having already played this week (or later weeks,
+    though that shouldn't happen when called promptly) doesn't leak into
+    its own snapshot -- only the QB starter attribution has a real
+    time-travel risk, which is why this deliberately uses the plain
+    team/game-based fallback (whoever had the most dropbacks in a team's
+    PREVIOUS game), NOT the live depth chart -- today's depth chart
+    reflects what's true NOW, not what was knowable entering that past
+    week, and would silently launder hindsight into a "prediction."
+
+    Market lines and weather here are REAL (these games already
+    happened), and actual_margin/actual_winner/scores are populated.
+    """
+    window = config.ROLLING_WINDOW_GAMES
+    roll_suffix = f"_roll{window}"
+    snapshot_cols = [f"{c}{roll_suffix}" for c in ROLLING_STAT_COLS]
+    adj_snapshot_cols = [f"{c}{roll_suffix}" for c in OPPONENT_ADJUSTED_STAT_COLS]
+    qb_snapshot_cols = [f"start_{c}{roll_suffix}" for c in QB_STARTER_STAT_COLS]
+    all_snapshot_cols = snapshot_cols + adj_snapshot_cols + qb_snapshot_cols
+
+    print("Loading raw data...")
+    pbp = fetch_all_seasons()
+    if season not in config.SEASONS:
+        current_pbp = fetch_pbp_season(season, force_refresh=True)
+        if not current_pbp.empty:
+            pbp = pd.concat([pbp, current_pbp], ignore_index=True)
+    pbp = standardize_team_abbrs(pbp, ["home_team", "away_team", "posteam", "defteam"])
+
+    schedules = fetch_schedules(max_season=season, force_refresh=True)
+    schedules = standardize_team_abbrs(schedules, ["home_team", "away_team"])
+    schedules = schedules[schedules["game_type"] == "REG"]
+
+    played = schedules[schedules["home_score"].notna()]
+    target_games = schedules[
+        (schedules["season"] == season) & (schedules["week"] == week) & (schedules["home_score"].notna())
+    ].copy()
+
+    if target_games.empty:
+        print(f"No played games found for season {season} Week {week}.")
+        return pd.DataFrame()
+
+    print("Aggregating historical plays to team-game level...")
+    team_game = build_team_game_stats(pbp)
+    team_game = attach_opponent_and_turnovers_forced(team_game)
+    team_game = add_schedule_context(team_game, played)
+    team_game_rolled = add_rolling_features(team_game)
+    team_game_rolled = add_opponent_adjusted_features(team_game_rolled)
+
+    print("Attributing QB form to the current starter, not the team...")
+    qb_player_game = build_qb_player_game_stats(pbp)
+    team_game_rolled = add_qb_starter_form(team_game_rolled, qb_player_game, window=window)
+
+    print(f"Computing form snapshots as of entering Week {week}...")
+    snapshot = compute_team_form_snapshot(team_game_rolled, ROLLING_STAT_COLS)
+    snapshot_adj = compute_team_form_snapshot(team_game_rolled, OPPONENT_ADJUSTED_STAT_COLS)
+    # Deliberately the plain fallback (no qb_player_game/season passed) --
+    # see docstring above on why the live depth chart would be hindsight here.
+    snapshot_qb = snapshot_qb_starter_form(team_game_rolled, window=window)
+    snapshot = snapshot.merge(snapshot_adj, on="team").merge(snapshot_qb, on="team")
+
+    games_played = (
+        team_game_rolled[(team_game_rolled["season"] == season) & (team_game_rolled["week"] < week)]
+        .groupby("team").size().rename("games_played_entering_week").reset_index()
+    )
+
+    # Weather is real here (these games already happened).
+    is_outdoor_hist = played["roof"].isin(["outdoors", "open"])
+    outdoor_temp_median = played.loc[is_outdoor_hist, "temp"].median()
+    outdoor_wind_median = played.loc[is_outdoor_hist, "wind"].median()
+
+    target_games["is_outdoor"] = target_games["roof"].isin(["outdoors", "open"]).astype(int)
+    outdoor_mask = target_games["is_outdoor"] == 1
+    target_games["temp"] = np.where(
+        outdoor_mask, target_games["temp"].fillna(outdoor_temp_median), config.DOME_DEFAULT_TEMP_F)
+    target_games["wind"] = np.where(
+        outdoor_mask, target_games["wind"].fillna(outdoor_wind_median), config.DOME_DEFAULT_WIND_MPH)
+
+    # Injury reports are real here too (these games already happened) --
+    # the actual report filed for that week, not an estimate.
+    week_injuries = fetch_injuries_season(season)
+    week_injuries = standardize_team_abbrs(week_injuries, ["team"])
+    if not week_injuries.empty:
+        week_injury_burden = build_injury_burden(week_injuries)
+    else:
+        week_injury_burden = pd.DataFrame(columns=["season", "week", "team", "injury_burden"])
+    target_games = target_games.merge(
+        week_injury_burden.rename(columns={"team": "home_team", "injury_burden": "home_injury_burden"}),
+        on=["season", "week", "home_team"], how="left")
+    target_games = target_games.merge(
+        week_injury_burden.rename(columns={"team": "away_team", "injury_burden": "away_injury_burden"}),
+        on=["season", "week", "away_team"], how="left")
+    target_games["home_injury_burden"] = target_games["home_injury_burden"].fillna(0)
+    target_games["away_injury_burden"] = target_games["away_injury_burden"].fillna(0)
+
+    home_snapshot = snapshot.rename(
+        columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in all_snapshot_cols}})
+    away_snapshot = snapshot.rename(
+        columns={**{"team": "away_team"}, **{c: f"away_{c}" for c in all_snapshot_cols}})
+
+    game_level = target_games.merge(home_snapshot, on="home_team", how="left")
+    game_level = game_level.merge(away_snapshot, on="away_team", how="left")
+
+    game_level = game_level.merge(
+        games_played.rename(columns={"team": "home_team",
+                                      "games_played_entering_week": "home_games_played_this_season"}),
+        on="home_team", how="left")
+    game_level = game_level.merge(
+        games_played.rename(columns={"team": "away_team",
+                                      "games_played_entering_week": "away_games_played_this_season"}),
+        on="away_team", how="left")
+    game_level["home_games_played_this_season"] = game_level["home_games_played_this_season"].fillna(0)
+    game_level["away_games_played_this_season"] = game_level["away_games_played_this_season"].fillna(0)
+
+    game_level["home_rest_days"] = game_level["home_rest"]
+    game_level["away_rest_days"] = game_level["away_rest"]
+    game_level["actual_margin"] = game_level["home_score"] - game_level["away_score"]
+    game_level["actual_winner"] = np.where(game_level["actual_margin"] > 0, "home", "away")
+
+    keep_cols = [
+        "game_id", "season", "week", "game_type", "gameday",
+        "home_team", "away_team", "div_game", "spread_line", "total_line",
+        "home_spread_odds", "away_spread_odds", "home_moneyline", "away_moneyline",
+        "over_odds", "under_odds",
+        "is_outdoor", "temp", "wind",
+        "home_rest_days", "away_rest_days",
+        "home_games_played_this_season", "away_games_played_this_season",
+        "home_injury_burden", "away_injury_burden",
+        "home_score", "away_score", "actual_margin", "actual_winner",
+    ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
+
+    game_level = game_level[keep_cols].copy()
+    game_level["gameday"] = pd.to_datetime(game_level["gameday"])
+    game_level = game_level.sort_values("gameday").reset_index(drop=True)
+    return game_level
+
+
 def build_playoff_features(season: int = None) -> pd.DataFrame:
     """
     Builds a game-level feature row for each ALREADY-PLAYED playoff game in

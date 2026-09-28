@@ -43,7 +43,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
-from data.build_features import build_upcoming_features
+from data.build_features import build_upcoming_features, build_played_week_features
 from data.fetch_data import fetch_schedules, standardize_team_abbrs
 from models.predict import load_model_artifacts, predict, add_market_edges, fair_home_win_prob
 
@@ -178,6 +178,78 @@ def snapshot(season: int, week: int):
     for _, r in rows.iterrows():
         print(f"  {r['away_team']} @ {r['home_team']}: pred {r['pred_margin']:+.1f}, "
               f"spread {r['open_spread_line']:+.1f}, edge {r['spread_edge_open']:+.1f}")
+
+
+# ---------------------------------------------------------------------------
+# RETRO WEEK — fallback for a week that wasn't snapshotted before kickoff.
+# Rebuilds a leak-free "as of entering that week" prediction (see
+# build_played_week_features) and logs it pre-graded in one step, since
+# the outcome's already known. Prefer `snapshot` beforehand when possible --
+# this exists because that doesn't always happen in practice.
+# ---------------------------------------------------------------------------
+def retro_week(season: int, week: int):
+    log = _load_log()
+    already_logged = set(log.loc[log["week"] == week, "game_id"]) if not log.empty else set()
+
+    games = build_played_week_features(season=season, week=week)
+    games = games[~games["game_id"].isin(already_logged)]
+    if games.empty:
+        print(f"No new played, unlogged games for season {season} Week {week}.")
+        return
+
+    _, _, feature_cols = load_model_artifacts()
+    predicted = predict(games, feature_cols)
+    predicted = add_market_edges(predicted)
+
+    now = _now()
+    rows = pd.DataFrame({
+        "game_id": predicted["game_id"], "season": predicted["season"], "week": predicted["week"],
+        "gameday": predicted["gameday"], "home_team": predicted["home_team"], "away_team": predicted["away_team"],
+        "div_game": predicted["div_game"], "snapshot_at": now,
+        "open_spread_line": predicted["spread_line"], "open_home_moneyline": predicted["home_moneyline"],
+        "open_away_moneyline": predicted["away_moneyline"], "open_total_line": predicted["total_line"],
+        "pred_margin": predicted["pred_margin"], "pred_home_win_prob": predicted["pred_home_win_prob"],
+        "fair_home_ml_prob_open": predicted["fair_home_ml_prob"].astype(float),
+        "spread_edge_open": predicted["spread_edge"], "ml_edge_open": predicted["ml_edge"],
+        "close_captured_at": now,
+        "close_spread_line": predicted["spread_line"], "close_home_moneyline": predicted["home_moneyline"],
+        "close_away_moneyline": predicted["away_moneyline"], "close_total_line": predicted["total_line"],
+        "fair_home_ml_prob_close": predicted["fair_home_ml_prob"].astype(float),
+        "spread_edge_close": predicted["spread_edge"], "ml_edge_close": predicted["ml_edge"],
+        "graded_at": now,
+        "actual_home_score": predicted["home_score"], "actual_away_score": predicted["away_score"],
+        "actual_margin": predicted["actual_margin"], "actual_winner": predicted["actual_winner"],
+    })
+
+    log = pd.concat([log, rows], ignore_index=True)
+    _save_log(log)
+
+    weekly_rows = []
+    for _, r in rows.iterrows():
+        winner_correct = (r["pred_margin"] > 0 and r["actual_winner"] == "home") or \
+                          (r["pred_margin"] < 0 and r["actual_winner"] == "away")
+        spread_correct = None
+        if pd.notna(r["open_spread_line"]):
+            covered_home = (r["actual_margin"] - r["open_spread_line"]) > 0
+            leans_home = (r["pred_margin"] - r["open_spread_line"]) > 0
+            spread_correct = bool(covered_home) if leans_home else not bool(covered_home)
+        weekly_rows.append({
+            "game_id": r["game_id"], "season": season, "week": week, "gameday": r["gameday"],
+            "away_team": r["away_team"], "home_team": r["home_team"],
+            "pred_margin": r["pred_margin"], "pred_home_win_prob": r["pred_home_win_prob"],
+            "vegas_spread_line": r["open_spread_line"], "vegas_home_moneyline": r["open_home_moneyline"],
+            "vegas_away_moneyline": r["open_away_moneyline"],
+            "actual_home_score": r["actual_home_score"], "actual_away_score": r["actual_away_score"],
+            "actual_margin": r["actual_margin"], "actual_winner": r["actual_winner"],
+            "winner_correct": winner_correct, "spread_correct": spread_correct, "graded_at": now,
+        })
+    _append_weekly_results(pd.DataFrame(weekly_rows))
+
+    print(f"Retro-logged {len(rows)} Week {week} game(s), pre-graded (leak-free 'as of entering "
+          f"that week' rebuild -- not a true pre-kickoff snapshot, since one was never taken).")
+    for _, r in rows.iterrows():
+        print(f"  {r['away_team']} @ {r['home_team']}: pred {r['pred_margin']:+.1f}, "
+              f"actual {r['actual_margin']:+.0f}")
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +486,7 @@ def main():
     add_common_args(sub.add_parser("snapshot", help="Record this week's prediction + market line"), True)
     add_common_args(sub.add_parser("update-closing", help="Refresh the market line for logged games"), True)
     add_common_args(sub.add_parser("update-results", help="Grade logged games against final scores"), True)
+    add_common_args(sub.add_parser("retro-week", help="Fallback: log+grade a played week that was never snapshotted"), True)
     add_common_args(sub.add_parser("report", help="Print backtest metrics for graded games"), False)
 
     args = parser.parse_args()
@@ -424,6 +497,8 @@ def main():
         update_closing_lines(args.season, args.week)
     elif args.command == "update-results":
         update_results(args.season, args.week)
+    elif args.command == "retro-week":
+        retro_week(args.season, args.week)
     elif args.command == "report":
         report(args.season, args.week)
 

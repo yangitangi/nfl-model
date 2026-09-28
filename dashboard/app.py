@@ -32,13 +32,10 @@ from models.predict import (
 
 st.set_page_config(page_title="NFL Game Predictions", page_icon="\U0001F3C8", layout="wide")
 
-# Which week of the upcoming season to show. Hardcoded rather than a
-# selectbox for now — Streamlit's selectbox widget wasn't behaving in
-# testing. NFL "weeks" span Wed/Thu through Sun/Mon, so don't bump this
-# just because one game in the week has been played -- only bump once
-# the whole week is done. Week 1 finished 16/16 (13-3 winner, 8-8 ATS)
-# before this was bumped to 2.
-WEEK_TO_SHOW = 2
+# Which week to show is a user-selectable dropdown (see main()), defaulting
+# to the "current" week -- computed live as the earliest week with any
+# unplayed game, not just "most recent game played" (a single Thursday
+# opener shouldn't bump it; NFL weeks span Wed/Thu through Sun/Mon).
 
 # "Notable edge" thresholds — just a display cue, not a betting signal.
 # The model currently trails Vegas on the 2025 holdout (see metrics below),
@@ -731,6 +728,66 @@ def load_upcoming(season: int):
     return build_upcoming_features(season=season)
 
 
+@st.cache_data(ttl=1800)
+def load_full_schedule(season: int) -> pd.DataFrame:
+    """Every regular-season game for the season, played or not -- cheap
+    (schedule only, no play-by-play/feature build), used for the week
+    selector, bye-week detection, the current-week determination, and the
+    schedule-only view for weeks we haven't run predictions for yet."""
+    sched = fetch_schedules(max_season=season, force_refresh=True)
+    sched = standardize_team_abbrs(sched, ["home_team", "away_team"])
+    sched = sched[(sched["season"] == season) & (sched["game_type"] == "REG")].copy()
+    sched["gameday"] = pd.to_datetime(sched["gameday"])
+    return sched.sort_values(["week", "gameday"])
+
+
+def get_bye_teams(schedule: pd.DataFrame, season: int, week: int) -> list[str]:
+    """All 32 teams minus whoever's playing this week -- schedule-derived
+    (the full season's team set), not hardcoded, so it stays correct
+    across relocations/renames without a code change."""
+    all_teams = sorted(set(schedule["home_team"]) | set(schedule["away_team"]))
+    week_games = schedule[schedule["week"] == week]
+    playing = set(week_games["home_team"]) | set(week_games["away_team"])
+    return [t for t in all_teams if t not in playing]
+
+
+def render_schedule_card(row, team_logos: dict) -> str:
+    """Lightweight matchup card for a week we haven't run predictions for
+    yet -- just who's playing, when, and the market line if one already
+    exists (some future weeks open lines early), with no model output."""
+    away_color = TEAM_COLORS.get(row["away_team"], "#5b6478")
+    home_color = TEAM_COLORS.get(row["home_team"], "#5b6478")
+    div_badge = '<span class="div-badge">Division game</span>' if row["div_game"] else ""
+    if pd.notna(row.get("spread_line")):
+        market_line = (f'<div class="stat-line">Spread: <b>'
+                        f'{format_spread(row["home_team"], row["away_team"], row["spread_line"])}</b></div>')
+    else:
+        market_line = '<div class="stat-line sub">Line not posted yet</div>'
+    return (
+        f'<div class="game-card" style="--away-color:{away_color}; --home-color:{home_color};">'
+        f'<div class="game-meta"><span>{row["gameday"].strftime("%a %b %d, %Y")}</span>{div_badge}</div>'
+        f'<div class="matchup-title">{team_logo_img(row["away_team"], team_logos)}'
+        f'<span class="team-away">{row["away_team"]}</span><span class="at-sep">@</span>'
+        f'{team_logo_img(row["home_team"], team_logos)}<span class="team-home">{row["home_team"]}</span></div>'
+        f'{market_line}</div>'
+    )
+
+
+def render_bye_teams_block(bye_teams: list[str], team_logos: dict) -> str:
+    if not bye_teams:
+        return ""
+    logos = "".join(
+        f'<span style="display:inline-flex;align-items:center;gap:0.3rem;margin:0 0.9rem 0.5rem 0;">'
+        f'{team_logo_img(t, team_logos)}<b>{t}</b></span>'
+        for t in bye_teams
+    )
+    return (
+        '<div class="bets-table-wrap" style="margin-bottom:1.1rem;">'
+        '<div class="my-bets-label" style="margin-bottom:0.6rem;">TEAMS ON BYE</div>'
+        f'<div>{logos}</div></div>'
+    )
+
+
 @st.cache_data(ttl=600)
 def load_completed(season: int, week: int) -> pd.DataFrame:
     """Already-played games for this week, using the FROZEN prediction from
@@ -889,67 +946,99 @@ def main():
     bets = load_bets()
     notes = load_analyst_notes()
 
-    with st.spinner(f"Building features for {config.CURRENT_SEASON} Week {WEEK_TO_SHOW}..."):
-        upcoming = load_upcoming(config.CURRENT_SEASON)
+    with st.spinner("Loading schedule..."):
+        schedule = load_full_schedule(config.CURRENT_SEASON)
 
-    week_games = upcoming[upcoming["week"] == WEEK_TO_SHOW] if not upcoming.empty else upcoming
+    if schedule.empty:
+        st.warning(f"No schedule found for {config.CURRENT_SEASON}.")
+        return
+
+    all_weeks = sorted(int(w) for w in schedule["week"].unique())
+    unplayed_weeks = schedule.loc[schedule["home_score"].isna(), "week"]
+    current_week = int(unplayed_weeks.min()) if not unplayed_weeks.empty else all_weeks[-1]
+    default_index = all_weeks.index(current_week) if current_week in all_weeks else 0
+
+    week_choice = st.selectbox(
+        "Week", options=all_weeks, index=default_index,
+        format_func=lambda w: f"Week {w}" + (" (current)" if w == current_week else ""),
+    )
+
+    bye_teams = get_bye_teams(schedule, config.CURRENT_SEASON, week_choice)
+    if bye_teams:
+        st.markdown(render_bye_teams_block(bye_teams, team_logos), unsafe_allow_html=True)
+
+    st.subheader(f"{config.CURRENT_SEASON} Season — Week {week_choice}")
+
+    week_sched = schedule[schedule["week"] == week_choice]
+    any_unplayed = week_sched["home_score"].isna().any()
+    any_played = week_sched["home_score"].notna().any()
     predicted = pd.DataFrame()
 
-    if week_games.empty:
-        st.info(f"No upcoming games left in Week {WEEK_TO_SHOW} -- everything's been played.")
+    if week_choice > current_week:
+        # A future week nobody's played yet -- just show the matchups,
+        # no reason to run the full model before it's worth predicting.
+        st.caption("Schedule only -- predictions haven't been run for this week yet.")
+        for _, row in week_sched.sort_values("gameday").iterrows():
+            st.markdown(render_schedule_card(row, team_logos), unsafe_allow_html=True)
+
     else:
-        predicted = predict(week_games, feature_cols)
-        predicted = add_market_edges(predicted)
+        if week_choice == current_week and any_unplayed:
+            with st.spinner(f"Building features for Week {week_choice}..."):
+                upcoming = load_upcoming(config.CURRENT_SEASON)
+            week_games = upcoming[upcoming["week"] == week_choice] if not upcoming.empty else upcoming
 
-        st.subheader(f"{config.CURRENT_SEASON} Season — Week {WEEK_TO_SHOW}")
+            if not week_games.empty:
+                predicted = predict(week_games, feature_cols)
+                predicted = add_market_edges(predicted)
 
-        teams = sorted(set(predicted["home_team"]) | set(predicted["away_team"]))
-        team_choice = st.multiselect("Filter by team", options=teams)
+                teams = sorted(set(predicted["home_team"]) | set(predicted["away_team"]))
+                team_choice = st.multiselect("Filter by team", options=teams)
+                view = predicted.copy()
+                if team_choice:
+                    view = view[view["home_team"].isin(team_choice) | view["away_team"].isin(team_choice)]
+                view = view.sort_values("gameday")
 
-        view = predicted.copy()
-        if team_choice:
-            view = view[view["home_team"].isin(team_choice) | view["away_team"].isin(team_choice)]
-        view = view.sort_values("gameday")
+                if view.empty:
+                    st.info("No games match the current filters.")
+                else:
+                    for _, row in view.iterrows():
+                        st.markdown(render_game_card(row, team_logos, bets, notes), unsafe_allow_html=True)
 
-        if view.empty:
-            st.info("No games match the current filters.")
-        else:
-            for _, row in view.iterrows():
-                st.markdown(render_game_card(row, team_logos, bets, notes), unsafe_allow_html=True)
+        if any_played:
+            with st.spinner("Loading completed games..."):
+                completed = load_completed(config.CURRENT_SEASON, week_choice)
+                week_predictions = load_week_predictions(config.CURRENT_SEASON, week_choice)
+                week_predictions = _use_live_predictions_for_pending(week_predictions, predicted)
 
-    with st.spinner("Loading completed games..."):
-        completed = load_completed(config.CURRENT_SEASON, WEEK_TO_SHOW)
-        week_predictions = load_week_predictions(config.CURRENT_SEASON, WEEK_TO_SHOW)
-        week_predictions = _use_live_predictions_for_pending(week_predictions, predicted)
+            if not completed.empty:
+                st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+                st.subheader(f"Completed Games — Week {week_choice}")
+                st.caption(
+                    "Frozen open-line prediction (from the weekly tracker snapshot, or a "
+                    "leak-free retrospective rebuild if that week wasn't snapshotted before "
+                    "kickoff) vs. the actual result. Winner call = straight-up/moneyline; "
+                    "spread call = against-the-spread -- these can and do disagree."
+                )
+                for _, row in completed.iterrows():
+                    st.markdown(render_result_card(row, team_logos, bets), unsafe_allow_html=True)
 
-    if not completed.empty:
+            if not week_predictions.empty:
+                st.markdown(f"##### Model Results Summary — Week {week_choice}")
+                st.caption(
+                    "Still-pending games show TBD rather than being left out, and use today's LIVE "
+                    "prediction/market line (matching the upcoming-game card above) rather than a "
+                    "possibly-stale snapshot -- already-final games below still use the frozen "
+                    "snapshot from before kickoff, which is what they were actually graded against."
+                )
+                st.markdown(render_model_results_table(week_predictions), unsafe_allow_html=True)
+
+                st.markdown("##### Our Prediction vs. Market Favorite-Size Bucket")
+                st.markdown(render_bucket_discrepancy_section(week_predictions, feature_cols), unsafe_allow_html=True)
+
+    if not bets.empty and (bets["week"] == week_choice).any():
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        st.subheader(f"Completed Games — Week {WEEK_TO_SHOW}")
-        st.caption(
-            "Frozen open-line prediction (from the weekly tracker snapshot) vs. "
-            "the actual result. Winner call = straight-up/moneyline; spread call = "
-            "against-the-spread -- these can and do disagree."
-        )
-        for _, row in completed.iterrows():
-            st.markdown(render_result_card(row, team_logos, bets), unsafe_allow_html=True)
-
-    if not week_predictions.empty:
-        st.markdown(f"##### Model Results Summary — Week {WEEK_TO_SHOW}")
-        st.caption(
-            "Still-pending games show TBD rather than being left out, and use today's LIVE "
-            "prediction/market line (matching the upcoming-game card above) rather than a "
-            "possibly-stale snapshot -- already-final games below still use the frozen "
-            "snapshot from before kickoff, which is what they were actually graded against."
-        )
-        st.markdown(render_model_results_table(week_predictions), unsafe_allow_html=True)
-
-        st.markdown("##### Our Prediction vs. Market Favorite-Size Bucket")
-        st.markdown(render_bucket_discrepancy_section(week_predictions, feature_cols), unsafe_allow_html=True)
-
-    if not bets.empty and (bets["week"] == WEEK_TO_SHOW).any():
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        st.subheader(f"My Bets — Week {WEEK_TO_SHOW} Summary")
-        st.markdown(render_bets_summary_table(bets, WEEK_TO_SHOW), unsafe_allow_html=True)
+        st.subheader(f"My Bets — Week {week_choice} Summary")
+        st.markdown(render_bets_summary_table(bets, week_choice), unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
