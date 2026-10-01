@@ -638,7 +638,7 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
                          "div_game", "spread_line", "total_line",
                          "is_outdoor", "temp", "wind"]
     keep_cols = shared_game_cols + ["team", "is_home", "rest_days",
-                 "games_played_this_season", "point_margin", "win"] + rolling_cols
+                 "games_played_this_season", "point_margin", "team_score", "win"] + rolling_cols
     if "injury_burden" in team_game_rolled.columns:
         keep_cols.append("injury_burden")
 
@@ -658,6 +658,7 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
 
     # Final target variables
     game_level["actual_margin"] = game_level["home_point_margin"]
+    game_level["actual_total"] = game_level["home_team_score"] + game_level["away_team_score"]
     game_level["actual_winner"] = np.where(game_level["actual_margin"] > 0, "home", "away")
     game_level["covered_spread"] = np.where(
         game_level["spread_line"].notna(),

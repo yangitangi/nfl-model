@@ -224,6 +224,16 @@ RANDOM_SEED = 42
 # tracking/line_movement_tracker.py starts collecting for the 2026 season.
 MARGIN_TARGET_MODE = "residual"   # "raw", "residual", or "blend"
 
+# Same idea as MARGIN_TARGET_MODE, for the separate total-points model (see
+# train_total_model in train_model.py): "residual" predicts
+# (actual_total - total_line) and adds total_line back at prediction time.
+# Kept as its own setting rather than reusing MARGIN_TARGET_MODE since the
+# two targets (margin vs. total) could reasonably want different modes even
+# though both default to "residual" for the same reason -- total_line is
+# already a strong anchor, so correcting it is a lower-variance problem than
+# reconstructing the total from scratch.
+TOTAL_TARGET_MODE = "residual"   # "raw" or "residual"
+
 # Weight given to the market spread in "blend" mode; (1 - this) goes to the
 # model's own raw prediction. Tuned via walk-forward validation across
 # multiple training seasons (see models/tune_blend_weight.py) -- not on the
