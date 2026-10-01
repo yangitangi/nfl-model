@@ -41,8 +41,6 @@ ROLLING_STAT_COLS = [
     "off_epa_per_play", "off_success_rate",
     "def_epa_per_play_allowed", "def_success_rate_allowed",
     "turnovers_lost", "turnovers_forced",
-    "turnover_epa_lost", "turnover_epa_forced",
-    "penalty_epa_per_play",
     "qb_epa_per_dropback", "qb_cpoe", "qb_air_yards_per_att",
     "st_epa_per_play",
     "point_margin",
@@ -116,25 +114,6 @@ def build_team_game_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     )
     turnovers_lost = turnovers_lost[["game_id", "team", "turnovers_lost"]]
 
-    # --- Turnover EPA: not just how many, but how costly they were (a
-    # pick-six and a desperation heave both count as "1 turnover", but EPA
-    # already captures the actual win-probability-relevant damage) ---
-    turnover_plays = live_plays[
-        (live_plays["interception"] == 1) | (live_plays["fumble_lost"] == 1)
-    ]
-    turnover_epa_lost = turnover_plays.groupby(["game_id", "posteam"]).agg(
-        turnover_epa_lost=("epa", "sum"),
-    ).reset_index().rename(columns={"posteam": "team"})
-
-    # --- Penalties: EPA cost of plays where the team drew a penalty.
-    # Uses the full play-by-play (not just live_plays) since penalties can
-    # occur on special-teams plays too; penalty_team identifies who committed
-    # it regardless of which side of the ball they're on. ---
-    penalty_plays = pbp[pbp["penalty"] == 1]
-    penalty_epa = penalty_plays.groupby(["game_id", "penalty_team"]).agg(
-        penalty_epa_per_play=("epa", "mean"),
-    ).reset_index().rename(columns={"penalty_team": "team"})
-
     # --- QB performance (dropbacks only) ---
     dropbacks = live_plays[live_plays["qb_dropback"] == 1]
     qb_stats = dropbacks.groupby(["game_id", "posteam"]).agg(
@@ -163,33 +142,20 @@ def build_team_game_stats(pbp: pd.DataFrame) -> pd.DataFrame:
     # --- Combine into one team-game row ---
     team_game = offense.merge(defense, on=["game_id", "team"], how="outer")
     team_game = team_game.merge(turnovers_lost, on=["game_id", "team"], how="left")
-    team_game = team_game.merge(turnover_epa_lost, on=["game_id", "team"], how="left")
-    team_game = team_game.merge(penalty_epa, on=["game_id", "team"], how="left")
     team_game = team_game.merge(qb_stats, on=["game_id", "team"], how="left")
     team_game = team_game.merge(st_stats, on=["game_id", "team"], how="left")
     team_game["turnovers_lost"] = team_game["turnovers_lost"].fillna(0)
-    # No qualifying turnover/penalty plays in a game is a real, meaningful
-    # zero (no cost), not missing data -- same fillna(0) logic as
-    # turnovers_lost above, unlike injury_burden's true-zero artifact
-    # (that one's rare; a penalty-free or turnover-free game is common).
-    team_game["turnover_epa_lost"] = team_game["turnover_epa_lost"].fillna(0)
-    team_game["penalty_epa_per_play"] = team_game["penalty_epa_per_play"].fillna(0)
 
     return team_game
 
 
 def attach_opponent_and_turnovers_forced(team_game: pd.DataFrame) -> pd.DataFrame:
     """
-    Adds turnovers_forced and turnover_epa_forced by matching each team-game
-    row to its opponent's turnovers_lost/turnover_epa_lost in the same
-    game_id.
+    Adds turnovers_forced by matching each team-game row to its opponent's
+    turnovers_lost in the same game_id.
     """
-    opp = team_game[["game_id", "team", "turnovers_lost", "turnover_epa_lost"]].rename(
-        columns={
-            "team": "opponent",
-            "turnovers_lost": "turnovers_forced",
-            "turnover_epa_lost": "turnover_epa_forced",
-        }
+    opp = team_game[["game_id", "team", "turnovers_lost"]].rename(
+        columns={"team": "opponent", "turnovers_lost": "turnovers_forced"}
     )
     # Merge each row to the OTHER team in the same game
     merged = team_game.merge(opp, on="game_id", how="left")
@@ -638,7 +604,7 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
                          "div_game", "spread_line", "total_line",
                          "is_outdoor", "temp", "wind"]
     keep_cols = shared_game_cols + ["team", "is_home", "rest_days",
-                 "games_played_this_season", "point_margin", "team_score", "win"] + rolling_cols
+                 "games_played_this_season", "point_margin", "win"] + rolling_cols
     if "injury_burden" in team_game_rolled.columns:
         keep_cols.append("injury_burden")
 
@@ -658,7 +624,6 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
 
     # Final target variables
     game_level["actual_margin"] = game_level["home_point_margin"]
-    game_level["actual_total"] = game_level["home_team_score"] + game_level["away_team_score"]
     game_level["actual_winner"] = np.where(game_level["actual_margin"] > 0, "home", "away")
     game_level["covered_spread"] = np.where(
         game_level["spread_line"].notna(),

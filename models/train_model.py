@@ -111,29 +111,6 @@ def get_margin_target(df: pd.DataFrame) -> np.ndarray:
     return df["actual_margin"].values
 
 
-def get_total_target(df: pd.DataFrame) -> np.ndarray:
-    """The regression target for the total-points model. See
-    config.TOTAL_TARGET_MODE -- same idea as get_margin_target, just
-    anchored on total_line (the market's combined-score number) instead of
-    spread_line."""
-    if config.TOTAL_TARGET_MODE == "residual":
-        return (df["actual_total"] - df["total_line"]).values
-    return df["actual_total"].values
-
-
-def reconstruct_total(df: pd.DataFrame, raw_pred: np.ndarray) -> np.ndarray:
-    """Converts the total model's raw output back to an actual-total-scale
-    prediction. "residual": adds total_line back; a missing total_line
-    falls back to the raw prediction's own scale being undefined, so this
-    uses a 45.0-point league-average prior instead (roughly the long-run
-    mean total), same "don't leave it undefined" principle as
-    reconstruct_margin."""
-    if config.TOTAL_TARGET_MODE == "residual":
-        offset = df["total_line"].fillna(45.0).values
-        return raw_pred + offset
-    return raw_pred
-
-
 def reconstruct_margin(df: pd.DataFrame, raw_pred: np.ndarray) -> np.ndarray:
     """
     Converts the model's raw output back to an actual-margin-scale
@@ -164,19 +141,6 @@ def reconstruct_margin(df: pd.DataFrame, raw_pred: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # MODEL TRAINING
 # ---------------------------------------------------------------------------
-def _build_regressor():
-    """Same model type/hyperparameters for every regression target in this
-    project (margin, total) -- kept in one place so they can't drift apart."""
-    if XGBOOST_AVAILABLE:
-        return XGBRegressor(
-            n_estimators=200, max_depth=3, learning_rate=0.05,
-            subsample=0.8, colsample_bytree=0.8,
-            random_state=config.RANDOM_SEED,
-        )
-    print("[note] xgboost not installed, using sklearn HistGradientBoostingRegressor instead")
-    return HistGradientBoostingRegressor(max_depth=3, random_state=config.RANDOM_SEED)
-
-
 def train_margin_model(train: pd.DataFrame, feature_cols: list[str]):
     """
     Trains a regression model predicting point margin (home_score - away_score)
@@ -185,25 +149,20 @@ def train_margin_model(train: pd.DataFrame, feature_cols: list[str]):
     is the underlying target either way, since win probability and spread
     predictions can both be derived from it, but not vice versa.
     """
-    model = _build_regressor()
-    model.fit(train[feature_cols], get_margin_target(train))
-    return model
+    X_train = train[feature_cols]
+    y_train = get_margin_target(train)
 
+    if XGBOOST_AVAILABLE:
+        model = XGBRegressor(
+            n_estimators=200, max_depth=3, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8,
+            random_state=config.RANDOM_SEED,
+        )
+    else:
+        print("[note] xgboost not installed, using sklearn HistGradientBoostingRegressor instead")
+        model = HistGradientBoostingRegressor(max_depth=3, random_state=config.RANDOM_SEED)
 
-def train_total_model(train: pd.DataFrame, feature_cols: list[str]):
-    """
-    Trains a regression model predicting the game's combined score
-    (home_score + away_score) -- or, in "residual" mode, the gap between
-    that total and the market's total_line (see get_total_target).
-
-    Paired with the margin model, this lets implied per-team scores be
-    backed out: home = (total + margin) / 2, away = (total - margin) / 2 --
-    the same "projected final score" display public models like David
-    Sasser's (davidsasser.com/nfl) show, built from two independently
-    validated numbers rather than guessed directly.
-    """
-    model = _build_regressor()
-    model.fit(train[feature_cols], get_total_target(train))
+    model.fit(X_train, y_train)
     return model
 
 
@@ -287,42 +246,6 @@ def print_results(results: dict):
         print("and validate over many more seasons/games before trusting it.")
 
 
-def evaluate_total(model, test: pd.DataFrame, feature_cols: list[str]) -> dict:
-    """Same idea as evaluate(), for the total-points model: MAE against the
-    actual combined score, benchmarked against Vegas's total_line on the
-    same games. There's no win/loss analog for a total, so this is simpler
-    than evaluate() -- MAE is the whole story."""
-    y_test_total = test["actual_total"].values
-    pred_total = reconstruct_total(test, model.predict(test[feature_cols]))
-
-    results = {
-        "model_mae_total": mean_absolute_error(y_test_total, pred_total),
-        "n_test_games": len(test),
-    }
-
-    has_total = test["total_line"].notna()
-    if has_total.sum() > 0:
-        vegas_pred_total = test.loc[has_total, "total_line"].values
-        vegas_actual_total = y_test_total[has_total.values]
-        results["vegas_mae_total"] = mean_absolute_error(vegas_actual_total, vegas_pred_total)
-        results["n_games_with_total"] = int(has_total.sum())
-
-    return results
-
-
-def print_total_results(results: dict):
-    print("\n=== TOTAL-POINTS MODEL PERFORMANCE (held-out test season) ===")
-    print(f"Games evaluated:        {results['n_test_games']:,}")
-    print(f"Model MAE (total):      {results['model_mae_total']:.2f} points")
-
-    if "vegas_mae_total" in results:
-        print(f"\n=== VEGAS BENCHMARK (same games, {results['n_games_with_total']:,} with a total line) ===")
-        print(f"Vegas MAE (total):      {results['vegas_mae_total']:.2f} points")
-        mae_gap = results["model_mae_total"] - results["vegas_mae_total"]
-        print(f"\nModel vs Vegas:  MAE {'+' if mae_gap > 0 else ''}{mae_gap:.2f} pts "
-              f"({'worse' if mae_gap > 0 else 'better'})")
-
-
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
@@ -350,31 +273,21 @@ def run_training_pipeline():
     results = evaluate(model, calibrator, test, feature_cols)
     print_results(results)
 
-    print("\nTraining total-points model...")
-    total_model = train_total_model(train, feature_cols)
-    total_results = evaluate_total(total_model, test, feature_cols)
-    print_total_results(total_results)
-
     # Save model artifacts
     import joblib
     model_path = config.MODELS_DIR / "margin_model.joblib"
     calibrator_path = config.MODELS_DIR / "win_calibrator.joblib"
-    total_model_path = config.MODELS_DIR / "total_model.joblib"
     joblib.dump(model, model_path)
     joblib.dump(calibrator, calibrator_path)
-    joblib.dump(total_model, total_model_path)
     joblib.dump(feature_cols, config.MODELS_DIR / "feature_columns.joblib")
-    # Pinned alongside the models so inference code (the dashboard) always
-    # reconstructs margins/totals the same way these models were trained,
-    # even if config.MARGIN_TARGET_MODE/TOTAL_TARGET_MODE change later
-    # without a retrain.
+    # Pinned alongside the model so inference code (the dashboard) always
+    # reconstructs margins the same way this model was trained, even if
+    # config.MARGIN_TARGET_MODE changes later without a retrain.
     joblib.dump(config.MARGIN_TARGET_MODE, config.MODELS_DIR / "margin_target_mode.joblib")
-    joblib.dump(config.TOTAL_TARGET_MODE, config.MODELS_DIR / "total_target_mode.joblib")
     print(f"\n[saved] {model_path}")
     print(f"[saved] {calibrator_path}")
-    print(f"[saved] {total_model_path}")
 
-    return model, calibrator, total_model, results, total_results
+    return model, calibrator, results
 
 
 if __name__ == "__main__":

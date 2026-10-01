@@ -124,21 +124,6 @@ FEATURES = {
     "special_teams_dvoa": False, # requires real Football Outsiders/FTN data -- distinct from
                                   # "special_teams" above, which is our own EPA-based proxy   (v3)
     "line_movement": False,      # requires odds API history        (v3)
-
-    # EPA-weighted versions of turnovers_lost/forced and a new penalty-EPA
-    # stat (see turnover_epa_lost/forced and penalty_epa_per_play in
-    # build_features.py) -- idea: a pick-six and a desperation heave both
-    # count as "1 turnover" under the existing raw-count feature, but EPA
-    # already captures the actual win-probability-relevant damage, so
-    # weighting by it seemed like it should help. Tested via
-    # models/feature_ablation.py (same 5-season walk-forward panel used
-    # throughout this project), both together AND separately -- REJECTED
-    # in all three runs: made MAE, win accuracy, AND ATS all worse
-    # (combined: MAE 9.71->9.75, win acc 67.4%->66.7%, ATS 51.2%->49.9%).
-    # Left off; computed in the data (like special_teams above) in case a
-    # differently-shaped version is worth trying later.
-    "turnover_epa": False,
-    "penalty_epa": False,
 }
 
 # Maps each rolling stat column (its base name, before the home_/away_ prefix
@@ -156,9 +141,6 @@ FEATURE_COLUMN_GROUPS = {
     "qb_cpoe": "qb_aggressiveness",
     "qb_air_yards_per_att": "qb_aggressiveness",
     "st_epa_per_play": "special_teams",
-    "turnover_epa_lost": "turnover_epa",
-    "turnover_epa_forced": "turnover_epa",
-    "penalty_epa_per_play": "penalty_epa",
     "off_epa_vs_opp_baseline": "opponent_adjusted_efficiency",
     "def_epa_allowed_vs_opp_baseline": "opponent_adjusted_efficiency",
     "start_qb_epa_per_dropback": "qb_specific_form",
@@ -224,16 +206,6 @@ RANDOM_SEED = 42
 # tracking/line_movement_tracker.py starts collecting for the 2026 season.
 MARGIN_TARGET_MODE = "residual"   # "raw", "residual", or "blend"
 
-# Same idea as MARGIN_TARGET_MODE, for the separate total-points model (see
-# train_total_model in train_model.py): "residual" predicts
-# (actual_total - total_line) and adds total_line back at prediction time.
-# Kept as its own setting rather than reusing MARGIN_TARGET_MODE since the
-# two targets (margin vs. total) could reasonably want different modes even
-# though both default to "residual" for the same reason -- total_line is
-# already a strong anchor, so correcting it is a lower-variance problem than
-# reconstructing the total from scratch.
-TOTAL_TARGET_MODE = "residual"   # "raw" or "residual"
-
 # Weight given to the market spread in "blend" mode; (1 - this) goes to the
 # model's own raw prediction. Tuned via walk-forward validation across
 # multiple training seasons (see models/tune_blend_weight.py) -- not on the
@@ -263,9 +235,6 @@ PBP_COLUMNS = [
 
     # turnovers
     "interception", "fumble_lost",
-
-    # penalties
-    "penalty", "penalty_team",
 
     # QB performance
     "qb_dropback", "qb_epa", "passer_player_id", "passer_player_name",
