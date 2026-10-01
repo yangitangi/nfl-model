@@ -25,7 +25,6 @@ from models.train_model import prepare_data, evaluate
 from models.predict import (
     load_model_artifacts as _load_model_artifacts,
     predict as _predict,
-    predict_total,
     add_market_edges,
     format_spread,
     format_ml,
@@ -286,18 +285,6 @@ def render_game_card(row, team_logos: dict, bets: pd.DataFrame = None, notes: pd
     home_pct = row["pred_home_win_prob"] * 100
     away_pct = 100 - home_pct
 
-    pred_total = row.get("pred_total")
-    if pd.notna(pred_total):
-        total_edge = pred_total - row["total_line"]
-        total_line = (
-            f'<div class="stat-line">Total: <b>{pred_total:.1f}</b> '
-            f'<span class="sub">({total_edge:+.1f} vs. market)</span></div>'
-            f'<div class="stat-line">Implied: <b>{row["away_team"]} {row["pred_away_score"]:.0f} '
-            f'&ndash; {row["pred_home_score"]:.0f} {row["home_team"]}</b></div>'
-        )
-    else:
-        total_line = ""
-
     return f"""
     <div class="game-card" style="--away-color:{away_color}; --home-color:{home_color};">
       <div class="game-meta">
@@ -319,7 +306,6 @@ def render_game_card(row, team_logos: dict, bets: pd.DataFrame = None, notes: pd
         <div class="stat-col">
           <div class="col-title">OUR MODEL</div>
           <div class="pred-spread">{format_spread(row['home_team'], row['away_team'], row['pred_margin'])}</div>
-          {total_line}
           <div class="win-bar-wrap">
             <span class="win-pct">{row['away_team']} {away_pct:.0f}%</span>
             <div class="win-bar">
@@ -1006,7 +992,6 @@ def main():
 
             if not week_games.empty:
                 predicted = predict(week_games, feature_cols)
-                predicted = predict_total(predicted, feature_cols)
                 predicted = add_market_edges(predicted)
 
                 teams = sorted(set(predicted["home_team"]) | set(predicted["away_team"]))

@@ -15,7 +15,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
-from models.train_model import reconstruct_margin, reconstruct_total
+from models.train_model import reconstruct_margin
 
 
 def load_model_artifacts():
@@ -34,24 +34,6 @@ def load_model_artifacts():
     return model, calibrator, feature_cols
 
 
-def load_total_model():
-    """
-    Loads the saved total-points model, and pins config.TOTAL_TARGET_MODE
-    to whatever it was actually trained with -- same reasoning as
-    load_model_artifacts(). Returns None if no total model has been trained
-    yet (keeps this an optional add-on, not a hard dependency for callers
-    that only care about margin/win-probability).
-    """
-    model_path = config.MODELS_DIR / "total_model.joblib"
-    if not model_path.exists():
-        return None
-    model = joblib.load(model_path)
-    target_mode_path = config.MODELS_DIR / "total_target_mode.joblib"
-    if target_mode_path.exists():
-        config.TOTAL_TARGET_MODE = joblib.load(target_mode_path)
-    return model
-
-
 def predict(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
     """Adds pred_margin (home team perspective, positive = home favored) and
     pred_home_win_prob columns."""
@@ -61,25 +43,6 @@ def predict(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
     out = df.copy()
     out["pred_margin"] = pred_margin
     out["pred_home_win_prob"] = pred_win_prob
-    return out
-
-
-def predict_total(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
-    """Adds pred_total (combined score) and, since df already has
-    pred_margin by this point in the pipeline, implied per-team scores:
-    pred_home_score = (total + margin) / 2, pred_away_score = (total -
-    margin) / 2 -- the same derivation public models like David Sasser's
-    (davidsasser.com/nfl) display directly. No-ops (leaves input unchanged)
-    if no total model has been trained yet."""
-    total_model = load_total_model()
-    out = df.copy()
-    if total_model is None:
-        return out
-    pred_total = reconstruct_total(out, total_model.predict(out[feature_cols]))
-    out["pred_total"] = pred_total
-    if "pred_margin" in out.columns:
-        out["pred_home_score"] = (pred_total + out["pred_margin"]) / 2
-        out["pred_away_score"] = (pred_total - out["pred_margin"]) / 2
     return out
 
 
