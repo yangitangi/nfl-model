@@ -45,7 +45,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from data.build_features import build_upcoming_features, build_played_week_features
 from data.fetch_data import fetch_schedules, standardize_team_abbrs
-from models.predict import load_model_artifacts, predict, add_market_edges, fair_home_win_prob
+from models.predict import load_model_artifacts, predict, predict_total, add_market_edges, fair_home_win_prob
 
 LOG_PATH = config.OUTPUTS_DIR / "prediction_log.parquet"
 
@@ -53,12 +53,12 @@ LOG_COLUMNS = [
     "game_id", "season", "week", "gameday", "home_team", "away_team", "div_game",
     "snapshot_at",
     "open_spread_line", "open_home_moneyline", "open_away_moneyline", "open_total_line",
-    "pred_margin", "pred_home_win_prob",
-    "fair_home_ml_prob_open", "spread_edge_open", "ml_edge_open",
+    "pred_margin", "pred_home_win_prob", "pred_total",
+    "fair_home_ml_prob_open", "spread_edge_open", "ml_edge_open", "total_edge_open",
     "close_captured_at",
     "close_spread_line", "close_home_moneyline", "close_away_moneyline", "close_total_line",
-    "fair_home_ml_prob_close", "spread_edge_close", "ml_edge_close",
-    "graded_at", "actual_home_score", "actual_away_score", "actual_margin", "actual_winner",
+    "fair_home_ml_prob_close", "spread_edge_close", "ml_edge_close", "total_edge_close",
+    "graded_at", "actual_home_score", "actual_away_score", "actual_margin", "actual_total", "actual_winner",
 ]
 
 # A separate, human-readable weekly results file -- prediction_log.parquet
@@ -71,22 +71,35 @@ WEEKLY_RESULTS_PATH = config.OUTPUTS_DIR / "weekly_results.csv"
 
 WEEKLY_RESULTS_COLUMNS = [
     "game_id", "season", "week", "gameday", "away_team", "home_team",
-    "pred_margin", "pred_home_win_prob",
-    "vegas_spread_line", "vegas_home_moneyline", "vegas_away_moneyline",
-    "actual_home_score", "actual_away_score", "actual_margin", "actual_winner",
-    "winner_correct", "spread_correct", "graded_at",
+    "pred_margin", "pred_home_win_prob", "pred_total",
+    "vegas_spread_line", "vegas_home_moneyline", "vegas_away_moneyline", "vegas_total_line",
+    "actual_home_score", "actual_away_score", "actual_margin", "actual_total", "actual_winner",
+    "winner_correct", "spread_correct", "total_correct", "graded_at",
 ]
 
 
 def _load_log() -> pd.DataFrame:
     if LOG_PATH.exists():
-        return pd.read_parquet(LOG_PATH)
+        log = pd.read_parquet(LOG_PATH)
+        # Schema migration: rows logged before a column existed (e.g.
+        # pred_total/total_edge_open/actual_total, added when O/U tracking
+        # was introduced) won't have it on disk -- backfill as NaN rather
+        # than letting every downstream .notna()/arithmetic check KeyError.
+        for col in LOG_COLUMNS:
+            if col not in log.columns:
+                log[col] = np.nan
+        return log
     return pd.DataFrame(columns=LOG_COLUMNS)
 
 
 def _load_weekly_results() -> pd.DataFrame:
     if WEEKLY_RESULTS_PATH.exists():
-        return pd.read_csv(WEEKLY_RESULTS_PATH)
+        results = pd.read_csv(WEEKLY_RESULTS_PATH)
+        # Same schema-migration reasoning as _load_log().
+        for col in WEEKLY_RESULTS_COLUMNS:
+            if col not in results.columns:
+                results[col] = np.nan
+        return results
     return pd.DataFrame(columns=WEEKLY_RESULTS_COLUMNS)
 
 
@@ -136,9 +149,11 @@ def snapshot(season: int, week: int):
 
     _, _, feature_cols = load_model_artifacts()
     predicted = predict(new_games, feature_cols)
+    predicted = predict_total(predicted, feature_cols)
     predicted = add_market_edges(predicted)
 
     now = _now()
+    has_total_pred = "pred_total" in predicted.columns
     rows = pd.DataFrame({
         "game_id": predicted["game_id"],
         "season": predicted["season"],
@@ -154,9 +169,11 @@ def snapshot(season: int, week: int):
         "open_total_line": predicted["total_line"],
         "pred_margin": predicted["pred_margin"],
         "pred_home_win_prob": predicted["pred_home_win_prob"],
+        "pred_total": predicted["pred_total"] if has_total_pred else np.nan,
         "fair_home_ml_prob_open": predicted["fair_home_ml_prob"].astype(float),
         "spread_edge_open": predicted["spread_edge"],
         "ml_edge_open": predicted["ml_edge"],
+        "total_edge_open": (predicted["pred_total"] - predicted["total_line"]) if has_total_pred else np.nan,
         "close_captured_at": pd.NaT,
         "close_spread_line": np.nan,
         "close_home_moneyline": np.nan,
@@ -165,10 +182,12 @@ def snapshot(season: int, week: int):
         "fair_home_ml_prob_close": np.nan,
         "spread_edge_close": np.nan,
         "ml_edge_close": np.nan,
+        "total_edge_close": np.nan,
         "graded_at": pd.NaT,
         "actual_home_score": np.nan,
         "actual_away_score": np.nan,
         "actual_margin": np.nan,
+        "actual_total": np.nan,
         "actual_winner": None,
     })
 
@@ -199,9 +218,12 @@ def retro_week(season: int, week: int):
 
     _, _, feature_cols = load_model_artifacts()
     predicted = predict(games, feature_cols)
+    predicted = predict_total(predicted, feature_cols)
     predicted = add_market_edges(predicted)
 
     now = _now()
+    has_total_pred = "pred_total" in predicted.columns
+    actual_total = predicted["home_score"] + predicted["away_score"]
     rows = pd.DataFrame({
         "game_id": predicted["game_id"], "season": predicted["season"], "week": predicted["week"],
         "gameday": predicted["gameday"], "home_team": predicted["home_team"], "away_team": predicted["away_team"],
@@ -209,16 +231,20 @@ def retro_week(season: int, week: int):
         "open_spread_line": predicted["spread_line"], "open_home_moneyline": predicted["home_moneyline"],
         "open_away_moneyline": predicted["away_moneyline"], "open_total_line": predicted["total_line"],
         "pred_margin": predicted["pred_margin"], "pred_home_win_prob": predicted["pred_home_win_prob"],
+        "pred_total": predicted["pred_total"] if has_total_pred else np.nan,
         "fair_home_ml_prob_open": predicted["fair_home_ml_prob"].astype(float),
         "spread_edge_open": predicted["spread_edge"], "ml_edge_open": predicted["ml_edge"],
+        "total_edge_open": (predicted["pred_total"] - predicted["total_line"]) if has_total_pred else np.nan,
         "close_captured_at": now,
         "close_spread_line": predicted["spread_line"], "close_home_moneyline": predicted["home_moneyline"],
         "close_away_moneyline": predicted["away_moneyline"], "close_total_line": predicted["total_line"],
         "fair_home_ml_prob_close": predicted["fair_home_ml_prob"].astype(float),
         "spread_edge_close": predicted["spread_edge"], "ml_edge_close": predicted["ml_edge"],
+        "total_edge_close": (predicted["pred_total"] - predicted["total_line"]) if has_total_pred else np.nan,
         "graded_at": now,
         "actual_home_score": predicted["home_score"], "actual_away_score": predicted["away_score"],
-        "actual_margin": predicted["actual_margin"], "actual_winner": predicted["actual_winner"],
+        "actual_margin": predicted["actual_margin"], "actual_total": actual_total,
+        "actual_winner": predicted["actual_winner"],
     })
 
     log = pd.concat([log, rows], ignore_index=True)
@@ -233,15 +259,23 @@ def retro_week(season: int, week: int):
             covered_home = (r["actual_margin"] - r["open_spread_line"]) > 0
             leans_home = (r["pred_margin"] - r["open_spread_line"]) > 0
             spread_correct = bool(covered_home) if leans_home else not bool(covered_home)
+        total_correct = None
+        if pd.notna(r["pred_total"]) and pd.notna(r["open_total_line"]):
+            went_over = r["actual_total"] > r["open_total_line"]
+            leans_over = r["pred_total"] > r["open_total_line"]
+            total_correct = bool(went_over) if leans_over else not bool(went_over)
         weekly_rows.append({
             "game_id": r["game_id"], "season": season, "week": week, "gameday": r["gameday"],
             "away_team": r["away_team"], "home_team": r["home_team"],
             "pred_margin": r["pred_margin"], "pred_home_win_prob": r["pred_home_win_prob"],
+            "pred_total": r["pred_total"],
             "vegas_spread_line": r["open_spread_line"], "vegas_home_moneyline": r["open_home_moneyline"],
-            "vegas_away_moneyline": r["open_away_moneyline"],
+            "vegas_away_moneyline": r["open_away_moneyline"], "vegas_total_line": r["open_total_line"],
             "actual_home_score": r["actual_home_score"], "actual_away_score": r["actual_away_score"],
-            "actual_margin": r["actual_margin"], "actual_winner": r["actual_winner"],
-            "winner_correct": winner_correct, "spread_correct": spread_correct, "graded_at": now,
+            "actual_margin": r["actual_margin"], "actual_total": r["actual_total"],
+            "actual_winner": r["actual_winner"],
+            "winner_correct": winner_correct, "spread_correct": spread_correct,
+            "total_correct": total_correct, "graded_at": now,
         })
     _append_weekly_results(pd.DataFrame(weekly_rows))
 
@@ -318,18 +352,22 @@ def update_results(season: int, week: int):
 
         home_score, away_score = m["home_score"], m["away_score"]
         actual_margin = home_score - away_score
+        actual_total = home_score + away_score
         actual_winner = "home" if home_score > away_score else "away" if away_score > home_score else "tie"
         now = _now()
 
         log.at[idx, "actual_home_score"] = home_score
         log.at[idx, "actual_away_score"] = away_score
         log.at[idx, "actual_margin"] = actual_margin
+        log.at[idx, "actual_total"] = actual_total
         log.at[idx, "actual_winner"] = actual_winner
         log.at[idx, "graded_at"] = now
         graded_n += 1
 
         pred_margin = log.at[idx, "pred_margin"]
+        pred_total = log.at[idx, "pred_total"]
         spread_line = log.at[idx, "open_spread_line"]
+        total_line = log.at[idx, "open_total_line"]
         winner_correct = (pred_margin > 0 and actual_winner == "home") or \
                           (pred_margin < 0 and actual_winner == "away")
         spread_correct = None
@@ -337,19 +375,26 @@ def update_results(season: int, week: int):
             covered_home = (actual_margin - spread_line) > 0
             leans_home = (pred_margin - spread_line) > 0
             spread_correct = bool(covered_home) if leans_home else not bool(covered_home)
+        total_correct = None
+        if pd.notna(pred_total) and pd.notna(total_line):
+            went_over = actual_total > total_line
+            leans_over = pred_total > total_line
+            total_correct = bool(went_over) if leans_over else not bool(went_over)
 
         weekly_rows.append({
             "game_id": log.at[idx, "game_id"], "season": season, "week": week,
             "gameday": log.at[idx, "gameday"],
             "away_team": log.at[idx, "away_team"], "home_team": log.at[idx, "home_team"],
             "pred_margin": pred_margin, "pred_home_win_prob": log.at[idx, "pred_home_win_prob"],
+            "pred_total": pred_total,
             "vegas_spread_line": spread_line,
             "vegas_home_moneyline": log.at[idx, "open_home_moneyline"],
             "vegas_away_moneyline": log.at[idx, "open_away_moneyline"],
+            "vegas_total_line": total_line,
             "actual_home_score": home_score, "actual_away_score": away_score,
-            "actual_margin": actual_margin, "actual_winner": actual_winner,
+            "actual_margin": actual_margin, "actual_total": actual_total, "actual_winner": actual_winner,
             "winner_correct": winner_correct, "spread_correct": spread_correct,
-            "graded_at": now,
+            "total_correct": total_correct, "graded_at": now,
         })
 
     _save_log(log)
@@ -385,14 +430,20 @@ def _add_grading_columns(graded: pd.DataFrame) -> pd.DataFrame:
     ml_hit = np.where(ml_leans_home, graded["home_win"] == 1, graded["home_win"] == 0)
     graded["_ml_hit"] = np.where(has_ml, ml_hit, np.nan)
 
+    has_total = graded["total_edge_open"].notna() & graded["open_total_line"].notna() & graded["actual_total"].notna()
+    went_over = graded["actual_total"] > graded["open_total_line"]
+    leans_over = graded["total_edge_open"] > 0
+    ou_hit = np.where(leans_over, went_over, ~went_over)
+    graded["_ou_hit"] = np.where(has_total, ou_hit, np.nan)
+
     return graded
 
 
 def _print_week_breakdown(graded: pd.DataFrame):
     """Per-week table so the spread vs. moneyline trend is visible as weeks
     accumulate toward Week 18, rather than only ever seeing one lump total."""
-    print("\n--- Week-by-week: spread vs. moneyline ---")
-    header = f"{'Week':<6}{'N':<5}{'Model MAE':<12}{'Spread ATS':<13}{'Moneyline':<14}"
+    print("\n--- Week-by-week: spread vs. moneyline vs. total ---")
+    header = f"{'Week':<6}{'N':<5}{'Model MAE':<12}{'Spread ATS':<13}{'Moneyline':<14}{'Total O/U':<14}"
     print(header)
     print("-" * len(header))
     for wk, g in sorted(graded.groupby("week")):
@@ -400,7 +451,9 @@ def _print_week_breakdown(graded: pd.DataFrame):
         ats = g["_ats_hit"].mean()
         ml_n = int(g["_ml_hit"].notna().sum())
         ml_str = f"{g['_ml_hit'].mean():.0%} (n={ml_n})" if ml_n else "n/a"
-        print(f"{wk:<6}{len(g):<5}{mae:<12.2f}{ats:<13.1%}{ml_str:<14}")
+        ou_n = int(g["_ou_hit"].notna().sum())
+        ou_str = f"{g['_ou_hit'].mean():.0%} (n={ou_n})" if ou_n else "n/a"
+        print(f"{wk:<6}{len(g):<5}{mae:<12.2f}{ats:<13.1%}{ml_str:<14}{ou_str:<14}")
 
 
 def report(season: int = None, week: int = None):
@@ -461,6 +514,26 @@ def report(season: int = None, week: int = None):
         print("\n--- MONEYLINE performance ---")
         print(f"Model's favored side (vs. fair market) won "
               f"{graded['_ml_hit'].mean():.1%} of the time ({has_ml.sum()} games)")
+
+    # TOTAL (O/U): did the side the model leaned toward (over/under, relative
+    # to the OPENING total line) actually hit? Same "would following the
+    # model's lean have paid off" framing as the spread section -- kept
+    # separate throughout since a model can be sharp on margin/winner and
+    # still be no better than a coin flip on total points, or vice versa.
+    if graded["_ou_hit"].notna().any():
+        has_total = graded["_ou_hit"].notna()
+        print("\n--- TOTAL (O/U) performance ---")
+        print(f"Following the model's lean vs. the opening total: "
+              f"{graded['_ou_hit'].mean():.1%} ({int(has_total.sum())} games)")
+        print("Does a bigger total disagreement mean more likely right?")
+        total_graded = graded[has_total].copy()
+        total_graded["_total_edge_bucket"] = pd.cut(
+            total_graded["total_edge_open"].abs(), bins=[0, 1, 2, 4, np.inf],
+            labels=["0-1 pt", "1-2 pt", "2-4 pt", "4+ pt"],
+        )
+        total_bucket_stats = total_graded.groupby("_total_edge_bucket", observed=True)["_ou_hit"].agg(["mean", "count"])
+        for label, row in total_bucket_stats.iterrows():
+            print(f"  {label:8s}  hit rate {row['mean']:.1%}  (n={int(row['count'])})")
 
     if week is None and graded["week"].nunique() > 1:
         _print_week_breakdown(graded)
