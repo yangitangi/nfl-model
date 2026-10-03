@@ -11,3 +11,4 @@ bet_id,season,week,game_id,team,opponent,is_home,bet_type,line,odds,stake,placed
 2026_01_GB_MIN_MIN_spread_1.5,2026,1,2026_01_GB_MIN,MIN,GB,True,spread,1.5,,,2026-09-14 00:17:13.456273+00:00,win,17.0,2026-09-14 00:17:20.261382+00:00,
 2026_01_ARI_LAC_ARI_spread_10.5,2026,1,2026_01_ARI_LAC,ARI,LAC,False,spread,10.5,,,2026-09-14 00:17:14.332185+00:00,win,12.0,2026-09-14 00:17:20.262384+00:00,
 2026_01_CLE_JAX_CLE_spread_9.5,2026,1,2026_01_CLE_JAX,CLE,JAX,False,spread,9.5,,,2026-09-14 00:17:15.225535+00:00,loss,-24.0,2026-09-14 00:17:20.264617+00:00,
+2026_04_PIT_CLE_CLE_spread_3.0,2026,4,2026_04_PIT_CLE,CLE,PIT,True,spread,3.0,,,2026-09-30 15:00:00+00:00,win,3.0,2026-10-03 00:45:08.917010+00:00,"User's own pre-game read (CLE +3), logged and graded alongside the three-way call record for this game."
