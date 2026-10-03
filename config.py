@@ -100,6 +100,21 @@ FEATURES = {
     # ATS 50.2%->51.3%), and at ZERO training-row cost (every team-week
     # has a burden value, even if 0) unlike most other v2/v2.5 features.
     "injuries": True,            # (v2)
+    # Candidate replacement for "injuries" above -- same underlying report,
+    # but bucketed into 4 ordinal categories (see bucket_injury_burden in
+    # build_features.py) instead of left as a raw continuous value, built
+    # specifically to fix the true-zero overfitting artifact confirmed via
+    # SHAP as the dominant driver (45-70% of edge) behind three real misses
+    # this season (GB@NYJ, SEA@ARI, PIT@CLE). Tested via
+    # models/feature_ablation.py -- REJECTED on the full 5-season
+    # walk-forward bar (MAE +0.03, win acc -0.4%, ATS -1.0%). Split by
+    # season phase, the diagnosis still looks right (Weeks 1-4 specifically:
+    # MAE -0.06, ATS +1.4%, but win acc -0.7% -- 2 of 3, not clean) while
+    # Weeks 5+ get uniformly worse -- uniform bucketing across the whole
+    # season isn't the fix; the problem is real but concentrated early, and
+    # a week-dependent treatment (e.g. only bucketing/dampening in Weeks
+    # 1-4) is the more promising next thing to try, not yet built.
+    "injuries_bucketed": False,
     "weather": True,             # wind/temp/dome flag              (v2)
     "pressure_line_play": False, # sack rate proxies                (v2)
 

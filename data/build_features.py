@@ -597,6 +597,25 @@ def snapshot_qb_starter_form(team_game_rolled_with_asof: pd.DataFrame,
     return result.rename(columns={f"{c}_asof": f"start_{c}_roll{window}" for c in QB_STARTER_STAT_COLS})
 
 
+# A literal zero injury_burden is rare (~1.6% of team-games) -- a tree
+# trained on the raw continuous value can fit a split exactly at 0 from
+# that tiny, early-season-skewed sample, then misapply it to any future
+# game that happens to have a clean report for an unrelated reason.
+# SHAP-confirmed as the dominant (45-70% of edge) driver behind three
+# separate bad model-vs-market misses this season (GB@NYJ, SEA@ARI,
+# PIT@CLE). Bucketing merges the rare true-zero case into a much wider
+# "low" bucket (0-2, ~1,490 of 4,175 team-games -- nowhere near rare) so
+# no single split can isolate it as a special case. Edges chosen from the
+# raw distribution's rough quartiles (median ~2.75, 75th pct ~4).
+INJURY_BURDEN_BUCKET_EDGES = [-0.01, 2.0, 4.0, 6.5, float("inf")]
+
+
+def bucket_injury_burden(burden: pd.Series) -> pd.Series:
+    """Ordinal-encodes injury_burden into coarse buckets (0/1/2/3) instead
+    of leaving it as a raw value a tree can isolate a narrow split on."""
+    return pd.cut(burden, bins=INJURY_BURDEN_BUCKET_EDGES, labels=[0, 1, 2, 3]).astype(int)
+
+
 def build_injury_burden(injuries: pd.DataFrame) -> pd.DataFrame:
     """
     A simple weighted count of a team's notable injuries entering a given
@@ -621,6 +640,7 @@ def attach_injury_burden(team_game: pd.DataFrame, injury_burden: pd.DataFrame) -
     """
     merged = team_game.merge(injury_burden, on=["season", "week", "team"], how="left")
     merged["injury_burden"] = merged["injury_burden"].fillna(0)
+    merged["injury_burden_bucket"] = bucket_injury_burden(merged["injury_burden"])
     return merged
 
 
@@ -641,6 +661,8 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
                  "games_played_this_season", "point_margin", "team_score", "win"] + rolling_cols
     if "injury_burden" in team_game_rolled.columns:
         keep_cols.append("injury_burden")
+    if "injury_burden_bucket" in team_game_rolled.columns:
+        keep_cols.append("injury_burden_bucket")
 
     slim = team_game_rolled[keep_cols]
 
@@ -864,6 +886,8 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
         on=["season", "week", "away_team"], how="left")
     upcoming["home_injury_burden"] = upcoming["home_injury_burden"].fillna(0)
     upcoming["away_injury_burden"] = upcoming["away_injury_burden"].fillna(0)
+    upcoming["home_injury_burden_bucket"] = bucket_injury_burden(upcoming["home_injury_burden"])
+    upcoming["away_injury_burden_bucket"] = bucket_injury_burden(upcoming["away_injury_burden"])
 
     print(f"Building feature rows for {len(upcoming):,} upcoming games...")
     home_snapshot = snapshot.rename(
@@ -892,6 +916,7 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
         "home_rest_days", "away_rest_days",
         "home_games_played_this_season", "away_games_played_this_season",
         "home_injury_burden", "away_injury_burden",
+        "home_injury_burden_bucket", "away_injury_burden_bucket",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
     game_level = game_level[keep_cols].copy()
@@ -1013,6 +1038,8 @@ def build_played_week_features(season: int, week: int) -> pd.DataFrame:
         on=["season", "week", "away_team"], how="left")
     target_games["home_injury_burden"] = target_games["home_injury_burden"].fillna(0)
     target_games["away_injury_burden"] = target_games["away_injury_burden"].fillna(0)
+    target_games["home_injury_burden_bucket"] = bucket_injury_burden(target_games["home_injury_burden"])
+    target_games["away_injury_burden_bucket"] = bucket_injury_burden(target_games["away_injury_burden"])
 
     home_snapshot = snapshot.rename(
         columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in all_snapshot_cols}})
@@ -1047,6 +1074,7 @@ def build_played_week_features(season: int, week: int) -> pd.DataFrame:
         "home_rest_days", "away_rest_days",
         "home_games_played_this_season", "away_games_played_this_season",
         "home_injury_burden", "away_injury_burden",
+        "home_injury_burden_bucket", "away_injury_burden_bucket",
         "home_score", "away_score", "actual_margin", "actual_winner",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
@@ -1160,6 +1188,8 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
         on=["season", "week", "away_team"], how="left")
     playoff_games["home_injury_burden"] = playoff_games["home_injury_burden"].fillna(0)
     playoff_games["away_injury_burden"] = playoff_games["away_injury_burden"].fillna(0)
+    playoff_games["home_injury_burden_bucket"] = bucket_injury_burden(playoff_games["home_injury_burden"])
+    playoff_games["away_injury_burden_bucket"] = bucket_injury_burden(playoff_games["away_injury_burden"])
 
     home_snapshot = snapshot.rename(
         columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in all_snapshot_cols}})
@@ -1192,6 +1222,7 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
         "home_rest_days", "away_rest_days",
         "home_games_played_this_season", "away_games_played_this_season",
         "home_injury_burden", "away_injury_burden",
+        "home_injury_burden_bucket", "away_injury_burden_bucket",
         "home_score", "away_score", "actual_margin", "actual_winner",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 

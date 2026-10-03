@@ -73,6 +73,9 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
     if config.FEATURES.get("injuries", False):
         feature_cols += ["home_injury_burden", "away_injury_burden"]
 
+    if config.FEATURES.get("injuries_bucketed", False):
+        feature_cols += ["home_injury_burden_bucket", "away_injury_burden_bucket"]
+
     return feature_cols
 
 
