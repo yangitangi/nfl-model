@@ -115,6 +115,28 @@ FEATURES = {
     # a week-dependent treatment (e.g. only bucketing/dampening in Weeks
     # 1-4) is the more promising next thing to try, not yet built.
     "injuries_bucketed": False,
+    # Second attempt, after plain bucketing above tested mixed (helped in
+    # Weeks 1-4 where the artifact concentrates, hurt in Weeks 5+). This
+    # version only touches early weeks: by default, Weeks 1-EARLY_SEASON_
+    # WEEK_CUTOFF use the value snapped to its bucket's MEAN (same 0-10pt
+    # scale as the raw feature, not the bucket index), later weeks use the
+    # untouched raw value. See smooth_early_season_injury_burden in
+    # build_features.py. Tested at cutoff=4 (Weeks 1-4) and cutoff=2
+    # (Weeks 1-2 only, matching where the true-zero artifact actually
+    # concentrated -- 38% of all zero-burden team-games fall in Weeks 1-2
+    # vs. ~11% expected if evenly spread). Both REJECTED on the full bar,
+    # both landing at 2-of-3 improved:
+    #   cutoff=4: MAE -0.018, ATS +0.2%, win acc -0.6%
+    #   cutoff=2: MAE -0.032, win acc +0.1%, ATS -0.1% (razor-thin miss,
+    #             ~1-2 games' worth of noise at n=1,252)
+    # Stopped here rather than keep searching cutoffs for one that clears
+    # all three on this same fixed 5-season set -- that would be curve-
+    # fitting the validation set, not a genuine fix. The diagnosis (true-
+    # zero overfitting, concentrated early) is solid; a clean automated
+    # fix for it hasn't been found yet. Current mitigation: catch it
+    # manually via SHAP + analyst notes on a per-game basis (3-for-3 this
+    # season: GB@NYJ, SEA@ARI, PIT@CLE), not an automated feature change.
+    "injuries_smoothed_early": False,
     "weather": True,             # wind/temp/dome flag              (v2)
     "pressure_line_play": False, # sack rate proxies                (v2)
 

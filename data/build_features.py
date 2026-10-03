@@ -616,6 +616,30 @@ def bucket_injury_burden(burden: pd.Series) -> pd.Series:
     return pd.cut(burden, bins=INJURY_BURDEN_BUCKET_EDGES, labels=[0, 1, 2, 3]).astype(int)
 
 
+# Week-dependent fix, built after plain bucketing (above) tested mixed:
+# helped in Weeks 1-4 (MAE, ATS) where the true-zero artifact actually
+# concentrates, hurt in Weeks 5+ where the raw feature was already fine.
+# Rather than replace the feature everywhere, only touch it early: for
+# Weeks 1-4, snap the raw value to its bucket's MEAN (not the bucket
+# index itself, which would mix an incomparable 0-3 scale into a 0-10
+# point feature) -- this keeps the result on the exact same continuous
+# scale the raw feature already uses in Week 5+, while collapsing the
+# rare, overfit-prone exact zero into a value shared by ~2,900
+# team-games instead of being a ~1.6% singleton. Means computed from the
+# full historical bucket distribution (pure function of the input
+# feature, not of any outcome/target -- no leakage risk).
+EARLY_SEASON_WEEK_CUTOFF = 4
+INJURY_BURDEN_BUCKET_MEANS = {0: 1.248, 1: 3.026, 2: 4.967, 3: 7.441}
+
+
+def smooth_early_season_injury_burden(burden: pd.Series, week: pd.Series) -> pd.Series:
+    """Burden unchanged for week > EARLY_SEASON_WEEK_CUTOFF; snapped to its
+    bucket's mean (see INJURY_BURDEN_BUCKET_MEANS) for earlier weeks."""
+    bucket_mean = bucket_injury_burden(burden).map(INJURY_BURDEN_BUCKET_MEANS)
+    is_early = week <= EARLY_SEASON_WEEK_CUTOFF
+    return burden.where(~is_early, bucket_mean)
+
+
 def build_injury_burden(injuries: pd.DataFrame) -> pd.DataFrame:
     """
     A simple weighted count of a team's notable injuries entering a given
@@ -641,6 +665,7 @@ def attach_injury_burden(team_game: pd.DataFrame, injury_burden: pd.DataFrame) -
     merged = team_game.merge(injury_burden, on=["season", "week", "team"], how="left")
     merged["injury_burden"] = merged["injury_burden"].fillna(0)
     merged["injury_burden_bucket"] = bucket_injury_burden(merged["injury_burden"])
+    merged["injury_burden_smoothed"] = smooth_early_season_injury_burden(merged["injury_burden"], merged["week"])
     return merged
 
 
@@ -663,6 +688,8 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
         keep_cols.append("injury_burden")
     if "injury_burden_bucket" in team_game_rolled.columns:
         keep_cols.append("injury_burden_bucket")
+    if "injury_burden_smoothed" in team_game_rolled.columns:
+        keep_cols.append("injury_burden_smoothed")
 
     slim = team_game_rolled[keep_cols]
 
@@ -888,6 +915,8 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     upcoming["away_injury_burden"] = upcoming["away_injury_burden"].fillna(0)
     upcoming["home_injury_burden_bucket"] = bucket_injury_burden(upcoming["home_injury_burden"])
     upcoming["away_injury_burden_bucket"] = bucket_injury_burden(upcoming["away_injury_burden"])
+    upcoming["home_injury_burden_smoothed"] = smooth_early_season_injury_burden(upcoming["home_injury_burden"], upcoming["week"])
+    upcoming["away_injury_burden_smoothed"] = smooth_early_season_injury_burden(upcoming["away_injury_burden"], upcoming["week"])
 
     print(f"Building feature rows for {len(upcoming):,} upcoming games...")
     home_snapshot = snapshot.rename(
@@ -917,6 +946,7 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
         "home_games_played_this_season", "away_games_played_this_season",
         "home_injury_burden", "away_injury_burden",
         "home_injury_burden_bucket", "away_injury_burden_bucket",
+        "home_injury_burden_smoothed", "away_injury_burden_smoothed",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
     game_level = game_level[keep_cols].copy()
@@ -1040,6 +1070,8 @@ def build_played_week_features(season: int, week: int) -> pd.DataFrame:
     target_games["away_injury_burden"] = target_games["away_injury_burden"].fillna(0)
     target_games["home_injury_burden_bucket"] = bucket_injury_burden(target_games["home_injury_burden"])
     target_games["away_injury_burden_bucket"] = bucket_injury_burden(target_games["away_injury_burden"])
+    target_games["home_injury_burden_smoothed"] = smooth_early_season_injury_burden(target_games["home_injury_burden"], target_games["week"])
+    target_games["away_injury_burden_smoothed"] = smooth_early_season_injury_burden(target_games["away_injury_burden"], target_games["week"])
 
     home_snapshot = snapshot.rename(
         columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in all_snapshot_cols}})
@@ -1075,6 +1107,7 @@ def build_played_week_features(season: int, week: int) -> pd.DataFrame:
         "home_games_played_this_season", "away_games_played_this_season",
         "home_injury_burden", "away_injury_burden",
         "home_injury_burden_bucket", "away_injury_burden_bucket",
+        "home_injury_burden_smoothed", "away_injury_burden_smoothed",
         "home_score", "away_score", "actual_margin", "actual_winner",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
@@ -1190,6 +1223,8 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
     playoff_games["away_injury_burden"] = playoff_games["away_injury_burden"].fillna(0)
     playoff_games["home_injury_burden_bucket"] = bucket_injury_burden(playoff_games["home_injury_burden"])
     playoff_games["away_injury_burden_bucket"] = bucket_injury_burden(playoff_games["away_injury_burden"])
+    playoff_games["home_injury_burden_smoothed"] = smooth_early_season_injury_burden(playoff_games["home_injury_burden"], playoff_games["week"])
+    playoff_games["away_injury_burden_smoothed"] = smooth_early_season_injury_burden(playoff_games["away_injury_burden"], playoff_games["week"])
 
     home_snapshot = snapshot.rename(
         columns={**{"team": "home_team"}, **{c: f"home_{c}" for c in all_snapshot_cols}})
@@ -1223,6 +1258,7 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
         "home_games_played_this_season", "away_games_played_this_season",
         "home_injury_burden", "away_injury_burden",
         "home_injury_burden_bucket", "away_injury_burden_bucket",
+        "home_injury_burden_smoothed", "away_injury_burden_smoothed",
         "home_score", "away_score", "actual_margin", "actual_winner",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
