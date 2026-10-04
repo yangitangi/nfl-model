@@ -79,6 +79,9 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
     if config.FEATURES.get("injuries_smoothed_early", False):
         feature_cols += ["home_injury_burden_smoothed", "away_injury_burden_smoothed"]
 
+    if config.FEATURES.get("knn_similarity", False):
+        feature_cols += ["knn_pred_margin"]
+
     return feature_cols
 
 
