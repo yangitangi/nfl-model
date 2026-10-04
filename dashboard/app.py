@@ -724,9 +724,29 @@ def render_bets_summary_table(bets: pd.DataFrame, week: int) -> str:
     )
 
 
+def _model_files_signature() -> str:
+    """Mtime-based cache-busting key. Without this, @st.cache_resource below
+    would keep serving whatever model it first loaded for the entire
+    lifetime of the Streamlit process -- even after a git pull replaces
+    margin_model.joblib/total_model.joblib/feature_columns.joblib on disk
+    with a freshly retrained version, since a redeploy doesn't always
+    fully restart the process. Confirmed: this exact staleness broke the
+    live dashboard with a feature_names mismatch right after the
+    knn_pred_margin retrain -- the deployed process kept the old model in
+    memory while the new feature_columns.joblib (with the extra feature)
+    had already landed on disk."""
+    names = ["margin_model.joblib", "win_calibrator.joblib", "feature_columns.joblib", "total_model.joblib"]
+    paths = [config.MODELS_DIR / n for n in names]
+    return "|".join(f"{p.name}:{p.stat().st_mtime_ns}" for p in paths if p.exists())
+
+
 @st.cache_resource
-def load_model_artifacts():
+def _cached_model_artifacts(signature: str):
     return _load_model_artifacts()
+
+
+def load_model_artifacts():
+    return _cached_model_artifacts(_model_files_signature())
 
 
 @st.cache_data(ttl=3600)
