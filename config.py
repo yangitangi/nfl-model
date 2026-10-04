@@ -176,6 +176,20 @@ FEATURES = {
     # differently-shaped version is worth trying later.
     "turnover_epa": False,
     "penalty_epa": False,
+
+    # Inspired by a nearest-neighbors NFL totals model shared by the user
+    # (Kerry Sports Analyst, "Building an NFL Model with Python", Aug
+    # 2024) -- that one predicted totals using only the market's own
+    # spread+total as a 2D distance space. This version (knn_pred_margin,
+    # see add_knn_margin_feature / compute_knn_margin_for_new_games in
+    # build_features.py) uses a richer space (spread, total, both teams'
+    # recent point-margin form) to find the 7 most similar PRIOR games and
+    # feed their average actual margin in as a candidate feature.
+    # Validated via the same 5-season walk-forward panel: improved all
+    # three metrics together (MAE 9.775->9.762, win accuracy 66.0%->66.5%,
+    # ATS 50.7%->51.6%) -- ADOPTED, one of the few features here that's
+    # cleared the full bar on the first attempt.
+    "knn_similarity": True,
 }
 
 # Maps each rolling stat column (its base name, before the home_/away_ prefix
