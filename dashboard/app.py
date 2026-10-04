@@ -724,38 +724,19 @@ def render_bets_summary_table(bets: pd.DataFrame, week: int) -> str:
     )
 
 
-def _deploy_signature() -> str:
-    """Mtime-based cache-busting key for EVERY @st.cache_data/cache_resource
-    function below whose output depends on model files or feature-building
-    code. Without this, Streamlit keeps serving whatever a cached function
-    first returned for the entire lifetime of the process -- even after a
-    git pull/redeploy replaces the underlying files on disk, since a
-    redeploy doesn't always fully restart the process (it can do a "soft"
-    script rerun that leaves existing cache entries in place).
-
-    Confirmed root cause of two separate live-dashboard breaks:
-    1. load_model_artifacts alone cached (old fix): a retrain landed on
-       disk but the process kept serving the old model object, feature
-       count mismatched against a freshly-loaded feature_cols list.
-    2. load_upcoming (this fix): on a fresh container, the FIRST script
-       run executed with whatever code had landed by that instant, cached
-       its dataframe (keyed only on `season`, no file-awareness), and a
-       closely-following push updated the model/feature_cols but left
-       that cached, differently-shaped dataframe in place -- model
-       expected a new column (e.g. knn_pred_margin) the cached data
-       didn't have.
-
-    Covers both the model artifacts AND the source files that determine
-    what build_upcoming_features computes, so any deploy that changes
-    either invalidates every cache that depends on them together, rather
-    than each cache drifting independently."""
+def _model_files_signature() -> str:
+    """Mtime-based cache-busting key. Without this, @st.cache_resource below
+    would keep serving whatever model it first loaded for the entire
+    lifetime of the Streamlit process -- even after a git pull replaces
+    margin_model.joblib/total_model.joblib/feature_columns.joblib on disk
+    with a freshly retrained version, since a redeploy doesn't always
+    fully restart the process. Confirmed: this exact staleness broke the
+    live dashboard with a feature_names mismatch right after the
+    knn_pred_margin retrain -- the deployed process kept the old model in
+    memory while the new feature_columns.joblib (with the extra feature)
+    had already landed on disk."""
     names = ["margin_model.joblib", "win_calibrator.joblib", "feature_columns.joblib", "total_model.joblib"]
     paths = [config.MODELS_DIR / n for n in names]
-    paths += [
-        config.BASE_DIR / "data" / "build_features.py",
-        config.BASE_DIR / "models" / "predict.py",
-        config.BASE_DIR / "models" / "train_model.py",
-    ]
     return "|".join(f"{p.name}:{p.stat().st_mtime_ns}" for p in paths if p.exists())
 
 
@@ -765,7 +746,7 @@ def _cached_model_artifacts(signature: str):
 
 
 def load_model_artifacts():
-    return _cached_model_artifacts(_deploy_signature())
+    return _cached_model_artifacts(_model_files_signature())
 
 
 @st.cache_data(ttl=3600)
@@ -777,12 +758,8 @@ def load_holdout_metrics(feature_cols):
 
 
 @st.cache_data(ttl=3600)
-def _cached_upcoming(season: int, signature: str):
-    return build_upcoming_features(season=season)
-
-
 def load_upcoming(season: int):
-    return _cached_upcoming(season, _deploy_signature())
+    return build_upcoming_features(season=season)
 
 
 @st.cache_data(ttl=1800)
