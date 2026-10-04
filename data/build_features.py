@@ -718,6 +718,108 @@ def assemble_game_level_table(team_game_rolled: pd.DataFrame) -> pd.DataFrame:
     return game_level.sort_values(["season", "week", "gameday"]).reset_index(drop=True)
 
 
+# Inspired by a nearest-neighbors NFL totals model (Kerry Sports Analyst,
+# "Building an NFL Model with Python", Aug 2024) -- that version used only
+# the market's own spread+total as its 2D distance space. This version
+# uses a richer space (spread, total, both teams' recent form) to test
+# whether "games that looked similar to this one, by pre-game inputs
+# already in our model, tended to resolve a certain way" adds anything
+# beyond what the tree model already captures on its own.
+KNN_NEIGHBORS = 7
+KNN_DISTANCE_COLS = ["spread_line", "total_line", "home_point_margin_roll5", "away_point_margin_roll5"]
+KNN_MIN_PRIOR_GAMES = 50  # don't trust a neighbor search until there's a real pool to search
+
+
+def add_knn_margin_feature(game_level: pd.DataFrame, k: int = KNN_NEIGHBORS) -> pd.DataFrame:
+    """
+    For each game, finds the K most similar EARLIER games (standardized
+    Euclidean distance over KNN_DISTANCE_COLS) and sets knn_pred_margin to
+    the inverse-distance-weighted average of those neighbors' actual
+    margins. Leak-free by construction, same anti-leakage discipline as
+    the rolling features -- a game can only be "similar to" games that
+    had already happened before it, never a future game.
+    """
+    g = game_level.sort_values("gameday").reset_index(drop=True)
+    needed = KNN_DISTANCE_COLS + ["actual_margin"]
+    valid_mask = g[needed].notna().all(axis=1)
+
+    X = g.loc[valid_mask, KNN_DISTANCE_COLS].to_numpy(dtype=float)
+    mean, std = X.mean(axis=0), X.std(axis=0)
+    std[std == 0] = 1.0
+    Xz = (X - mean) / std
+
+    actual_margin = g.loc[valid_mask, "actual_margin"].to_numpy(dtype=float)
+    valid_positions = np.flatnonzero(valid_mask.to_numpy())  # positions in g, already gameday-sorted
+
+    knn_pred = np.full(len(g), np.nan)
+    for i in range(len(Xz)):
+        if i < KNN_MIN_PRIOR_GAMES:
+            continue
+        dists = np.sqrt(((Xz[:i] - Xz[i]) ** 2).sum(axis=1))
+        k_eff = min(k, i)
+        nearest = np.argpartition(dists, k_eff - 1)[:k_eff]
+        weights = 1.0 / (dists[nearest] + 1e-6)
+        knn_pred[valid_positions[i]] = np.average(actual_margin[nearest], weights=weights)
+
+    g["knn_pred_margin"] = knn_pred
+    return g
+
+
+def compute_knn_margin_for_new_games(new_games: pd.DataFrame, pool: pd.DataFrame = None) -> pd.Series:
+    """
+    Live-prediction counterpart to add_knn_margin_feature. Thin wrapper
+    around _compute_knn_margin_for_new_games that guarantees a valid,
+    correctly-indexed all-NaN Series on ANY exception -- this feature
+    repeatedly broke the live dashboard with a missing-column KeyError
+    whose exact cause was never pinned down despite being verified
+    correct in every offline repro attempt (strongly deploy-environment-
+    specific: Linux/Python 3.14 vs local Windows/Python 3.11). Rather
+    than keep guessing blind, this makes column creation unconditional:
+    the assignment `df["knn_pred_margin"] = compute_knn_margin_for_new_
+    games(df)` can now never fail to create the column, whatever goes
+    wrong inside. A caught exception prints to stdout (visible in
+    Streamlit Cloud logs) so a real bug still leaves a trace to find.
+    """
+    try:
+        return _compute_knn_margin_for_new_games(new_games, pool)
+    except Exception as e:
+        print(f"[knn_pred_margin] computation failed, falling back to NaN: {type(e).__name__}: {e}")
+        return pd.Series(np.nan, index=new_games.index)
+
+
+def _compute_knn_margin_for_new_games(new_games: pd.DataFrame, pool: pd.DataFrame = None) -> pd.Series:
+    if pool is None:
+        pool_path = config.PROCESSED_DATA_DIR / "game_level_features.parquet"
+        pool = pd.read_parquet(pool_path) if pool_path.exists() else pd.DataFrame()
+
+    needed = KNN_DISTANCE_COLS + ["actual_margin"]
+    pool_valid = pool.dropna(subset=[c for c in needed if c in pool.columns]) if not pool.empty else pool
+    if pool_valid.empty or len(pool_valid) < KNN_MIN_PRIOR_GAMES:
+        return pd.Series(np.nan, index=new_games.index)
+
+    X_pool = pool_valid[KNN_DISTANCE_COLS].to_numpy(dtype=float)
+    mean, std = X_pool.mean(axis=0), X_pool.std(axis=0)
+    std[std == 0] = 1.0
+    Xz_pool = (X_pool - mean) / std
+    actual_margin = pool_valid["actual_margin"].to_numpy(dtype=float)
+
+    has_inputs = new_games[KNN_DISTANCE_COLS].notna().all(axis=1)
+    result = pd.Series(np.nan, index=new_games.index)
+    X_new = new_games.loc[has_inputs, KNN_DISTANCE_COLS].to_numpy(dtype=float)
+    Xz_new = (X_new - mean) / std
+
+    k_eff = min(KNN_NEIGHBORS, len(Xz_pool))
+    preds = []
+    for row in Xz_new:
+        dists = np.sqrt(((Xz_pool - row) ** 2).sum(axis=1))
+        nearest = np.argpartition(dists, k_eff - 1)[:k_eff]
+        weights = 1.0 / (dists[nearest] + 1e-6)
+        preds.append(np.average(actual_margin[nearest], weights=weights))
+
+    result.loc[has_inputs] = preds
+    return result
+
+
 def build_feature_table(seasons: list[int] = None, save: bool = True) -> pd.DataFrame:
     """
     Full pipeline: raw data -> team-game stats -> rolling features ->
@@ -761,6 +863,9 @@ def build_feature_table(seasons: list[int] = None, save: bool = True) -> pd.Data
 
     print("Assembling final game-level table...")
     game_level = assemble_game_level_table(team_game_rolled)
+
+    print("Computing nearest-neighbor margin feature...")
+    game_level = add_knn_margin_feature(game_level)
 
     if save:
         out_path = config.PROCESSED_DATA_DIR / "game_level_features.parquet"
@@ -936,6 +1041,8 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     game_level["home_games_played_this_season"] = 0
     game_level["away_games_played_this_season"] = 0
 
+    game_level["knn_pred_margin"] = compute_knn_margin_for_new_games(game_level)
+
     keep_cols = [
         "game_id", "season", "week", "game_type", "gameday",
         "home_team", "away_team", "div_game", "spread_line", "total_line",
@@ -947,6 +1054,7 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
         "home_injury_burden", "away_injury_burden",
         "home_injury_burden_bucket", "away_injury_burden_bucket",
         "home_injury_burden_smoothed", "away_injury_burden_smoothed",
+        "knn_pred_margin",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
     game_level = game_level[keep_cols].copy()
@@ -1096,6 +1204,10 @@ def build_played_week_features(season: int, week: int) -> pd.DataFrame:
     game_level["away_rest_days"] = game_level["away_rest"]
     game_level["actual_margin"] = game_level["home_score"] - game_level["away_score"]
     game_level["actual_winner"] = np.where(game_level["actual_margin"] > 0, "home", "away")
+    # compute_knn_margin_for_new_games (not add_knn_margin_feature) -- this
+    # week's own results must never leak into its own neighbor search, so
+    # neighbors are only drawn from the cached pool of PRIOR played games.
+    game_level["knn_pred_margin"] = compute_knn_margin_for_new_games(game_level)
 
     keep_cols = [
         "game_id", "season", "week", "game_type", "gameday",
@@ -1108,6 +1220,7 @@ def build_played_week_features(season: int, week: int) -> pd.DataFrame:
         "home_injury_burden", "away_injury_burden",
         "home_injury_burden_bucket", "away_injury_burden_bucket",
         "home_injury_burden_smoothed", "away_injury_burden_smoothed",
+        "knn_pred_margin",
         "home_score", "away_score", "actual_margin", "actual_winner",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
@@ -1247,6 +1360,7 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
     game_level["away_rest_days"] = game_level["away_rest"]
     game_level["actual_margin"] = game_level["home_score"] - game_level["away_score"]
     game_level["actual_winner"] = np.where(game_level["actual_margin"] > 0, "home", "away")
+    game_level["knn_pred_margin"] = compute_knn_margin_for_new_games(game_level)
 
     keep_cols = [
         "game_id", "season", "week", "game_type", "gameday",
@@ -1259,6 +1373,7 @@ def build_playoff_features(season: int = None) -> pd.DataFrame:
         "home_injury_burden", "away_injury_burden",
         "home_injury_burden_bucket", "away_injury_burden_bucket",
         "home_injury_burden_smoothed", "away_injury_burden_smoothed",
+        "knn_pred_margin",
         "home_score", "away_score", "actual_margin", "actual_winner",
     ] + [f"home_{c}" for c in all_snapshot_cols] + [f"away_{c}" for c in all_snapshot_cols]
 
