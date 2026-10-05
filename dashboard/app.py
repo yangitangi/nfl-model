@@ -556,6 +556,82 @@ def render_model_results_table(week_predictions: pd.DataFrame) -> str:
     )
 
 
+def render_score_prediction_table(week_predictions: pd.DataFrame) -> str:
+    """Predicted final score (derived from pred_margin + pred_total) vs. the
+    actual score. Only games with a logged pred_total appear; the O/U call is
+    graded against the OPEN total, matching the tracker. Same unindented,
+    blank-line-free HTML rule as the other tables."""
+    if week_predictions.empty or "pred_total" not in week_predictions.columns:
+        return ""
+    df = week_predictions[week_predictions["pred_total"].notna()].sort_values("gameday")
+    if df.empty:
+        return ""
+
+    def badge(correct) -> str:
+        if correct is None or pd.isna(correct):
+            return '<span class="edge-badge">TBD</span>'
+        cls = "result-correct" if correct else "result-wrong"
+        return f'<span class="edge-badge {cls}">{"Correct" if correct else "Wrong"}</span>'
+
+    rows = []
+    margin_miss, total_miss, mkt_total_miss, mkt_margin_miss, ou_hits = [], [], [], [], []
+    for _, r in df.iterrows():
+        ph = (r["pred_total"] + r["pred_margin"]) / 2
+        pa = (r["pred_total"] - r["pred_margin"]) / 2
+        pred_cell = f'{r["away_team"]} {pa:.0f} &ndash; {ph:.0f} {r["home_team"]}'
+        mkt_total = r["open_total_line"]
+        mkt_cell = f"{mkt_total:.1f}" if pd.notna(mkt_total) else "n/a"
+        if r["is_final"]:
+            at = r["home_score"] + r["away_score"]
+            actual_cell = f'<b>{r["away_team"]} {r["away_score"]:.0f} &ndash; {r["home_score"]:.0f} {r["home_team"]}</b>'
+            m_miss = r["pred_margin"] - r["actual_margin"]
+            t_miss = r["pred_total"] - at
+            margin_miss.append(abs(m_miss))
+            total_miss.append(abs(t_miss))
+            if pd.notna(r["open_spread_line"]):
+                mkt_margin_miss.append(abs(r["open_spread_line"] - r["actual_margin"]))
+            if pd.notna(mkt_total):
+                mkt_total_miss.append(abs(mkt_total - at))
+                ou = None if at == mkt_total else bool((at > mkt_total) == (r["pred_total"] > mkt_total))
+                if ou is not None:
+                    ou_hits.append(ou)
+            else:
+                ou = None
+            margin_cell = f"{abs(m_miss):.1f}"
+            total_cell = f'{r["pred_total"]:.1f} vs. {at:.0f} ({abs(t_miss):.1f} off, {"high" if t_miss > 0 else "low"})'
+        else:
+            actual_cell, margin_cell, ou = "TBD", "&ndash;", None
+            total_cell = f'{r["pred_total"]:.1f}'
+        lean = "Over" if (pd.notna(mkt_total) and r["pred_total"] > mkt_total) else "Under"
+        rows.append(
+            f'<tr><td>{r["away_team"]} @ <b>{r["home_team"]}</b></td>'
+            f'<td>{pred_cell}</td><td>{actual_cell}</td><td>{margin_cell}</td>'
+            f'<td>{total_cell}</td><td>{mkt_cell}</td>'
+            f'<td>{lean} {badge(ou)}</td></tr>'
+        )
+
+    n = len(margin_miss)
+    if n:
+        footer = (
+            f'Margin MAE: model <b>{np.mean(margin_miss):.1f}</b> vs. market '
+            f'<b>{np.mean(mkt_margin_miss):.1f}</b> &middot; '
+            f'Total MAE: model <b>{np.mean(total_miss):.1f}</b> vs. market '
+            f'<b>{np.mean(mkt_total_miss):.1f}</b> &middot; '
+            f'O/U vs. open total: <b>{sum(ou_hits)}/{len(ou_hits)}</b> ({n} graded games)'
+        )
+    else:
+        footer = "No graded games yet."
+    return (
+        '<div class="bets-table-wrap"><table class="bets-table results-table">'
+        '<thead><tr><th>Game</th><th>Predicted Score</th><th>Actual Score</th>'
+        '<th>Margin Off By <span class="sub">(pts)</span></th>'
+        '<th>Total: Pred vs. Actual</th>'
+        '<th>Market Total <span class="sub">(open)</span></th><th>O/U Call</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table>'
+        f'<div class="bets-summary-footer">{footer}</div></div>'
+    )
+
+
 FAVORITE_BUCKETS = ["Short fav (<=3)", "Middle (3-7)", "Large fav (7+)"]
 
 
@@ -1069,6 +1145,16 @@ def main():
                     "snapshot from before kickoff, which is what they were actually graded against."
                 )
                 st.markdown(render_model_results_table(week_predictions), unsafe_allow_html=True)
+
+                score_table = render_score_prediction_table(week_predictions)
+                if score_table:
+                    st.markdown(f"##### Predicted Score vs. Actual — Week {week_choice}")
+                    st.caption(
+                        "Predicted score = model margin + model total, split between the two teams. "
+                        "Week 4 is the first week with a total model, so its totals were logged from the "
+                        "pre-game Sunday-morning run; later weeks come from the regular snapshot."
+                    )
+                    st.markdown(score_table, unsafe_allow_html=True)
 
                 st.markdown("##### Our Prediction vs. Market Favorite-Size Bucket")
                 st.markdown(render_bucket_discrepancy_section(week_predictions, feature_cols), unsafe_allow_html=True)
