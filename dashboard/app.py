@@ -10,6 +10,7 @@ Run with:
     streamlit run dashboard/app.py
 """
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -20,7 +21,6 @@ import streamlit as st
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 import data.build_features as _build_features_module
-from data.build_features import build_upcoming_features
 from data.fetch_data import fetch_team_logos, fetch_schedules, standardize_team_abbrs
 from models.train_model import prepare_data, evaluate
 from models.predict import (
@@ -844,7 +844,10 @@ def _upcoming_code_signature() -> str:
 
 @st.cache_data(ttl=3600)
 def _cached_upcoming(season: int, signature: str):
-    return build_upcoming_features(season=season)
+    # A soft redeploy re-runs this script but keeps already-imported modules
+    # in memory, so reload the feature code whenever the signature changes.
+    importlib.reload(_build_features_module)
+    return _build_features_module.build_upcoming_features(season=season)
 
 
 def load_upcoming(season: int):
