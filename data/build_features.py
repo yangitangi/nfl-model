@@ -911,6 +911,22 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     upcoming = upcoming.merge(
         injury_burden_upcoming.rename(columns={"team": "away_team", "injury_burden": "away_injury_burden"}),
         on=["season", "week", "away_team"], how="left")
+    # A week whose report hasn't posted yet (fewer than half the league has
+    # any row) would otherwise read as 32 true zeros -- the exact artifact
+    # the tree over-reacts to -- so fill those with each team's own average
+    # from earlier reported weeks until the real report arrives.
+    if not injury_burden_upcoming.empty:
+        prior_mean = injury_burden_upcoming.groupby("team")["injury_burden"].mean()
+        league_mean = injury_burden_upcoming["injury_burden"].mean()
+        reported_counts = injury_burden_upcoming.groupby("week")["team"].nunique()
+        for week in upcoming["week"].unique():
+            if reported_counts.get(week, 0) >= 16:
+                continue
+            wk = upcoming["week"] == week
+            for side in ("home", "away"):
+                fill = upcoming.loc[wk, f"{side}_team"].map(prior_mean).fillna(league_mean)
+                col = f"{side}_injury_burden"
+                upcoming.loc[wk, col] = upcoming.loc[wk, col].fillna(fill)
     upcoming["home_injury_burden"] = upcoming["home_injury_burden"].fillna(0)
     upcoming["away_injury_burden"] = upcoming["away_injury_burden"].fillna(0)
     upcoming["home_injury_burden_bucket"] = bucket_injury_burden(upcoming["home_injury_burden"])
