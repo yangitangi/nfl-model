@@ -19,6 +19,7 @@ import streamlit as st
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
+import data.build_features as _build_features_module
 from data.build_features import build_upcoming_features
 from data.fetch_data import fetch_team_logos, fetch_schedules, standardize_team_abbrs
 from models.train_model import prepare_data, evaluate
@@ -833,9 +834,21 @@ def load_holdout_metrics(feature_cols):
     return evaluate(model, calibrator, test, feature_cols)
 
 
+def _upcoming_code_signature() -> str:
+    """Mtimes of the files that change what build_upcoming_features returns
+    (feature code, config, QB overrides). Part of load_upcoming's cache key
+    so a redeploy can't keep serving predictions built by older code."""
+    paths = [Path(_build_features_module.__file__), config.OUTPUTS_DIR / "qb_starter_overrides.csv", Path(config.__file__)]
+    return "|".join(f"{p.name}:{p.stat().st_mtime_ns}" for p in paths if p.exists())
+
+
 @st.cache_data(ttl=3600)
-def load_upcoming(season: int):
+def _cached_upcoming(season: int, signature: str):
     return build_upcoming_features(season=season)
+
+
+def load_upcoming(season: int):
+    return _cached_upcoming(season, _upcoming_code_signature())
 
 
 @st.cache_data(ttl=1800)
