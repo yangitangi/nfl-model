@@ -41,7 +41,7 @@ BETS_PATH = config.OUTPUTS_DIR / "bets.csv"
 BET_COLUMNS = [
     "bet_id", "season", "week", "game_id", "team", "opponent", "is_home",
     "bet_type", "line", "odds", "stake", "placed_at",
-    "result", "actual_margin", "graded_at", "notes",
+    "result", "actual_margin", "graded_at", "notes", "legs",
 ]
 
 
@@ -53,6 +53,8 @@ def _load_bets() -> pd.DataFrame:
     # the datetime columns back explicitly so a later Timestamp assignment
     # doesn't hit a dtype mismatch.
     df = pd.read_csv(BETS_PATH)
+    if "legs" not in df.columns:
+        df["legs"] = np.nan
     for col in ["placed_at", "graded_at"]:
         df[col] = pd.to_datetime(df[col], errors="coerce", utc=True).astype("datetime64[ns, UTC]")
     return df
@@ -110,6 +112,71 @@ def add_bet(season: int, week: int, team: str, bet_type: str, line: float = None
     return bet_id
 
 
+def add_parlay(season: int, week: int, legs: list[str], odds: float = None,
+               stake: float = None, notes: str = None) -> str:
+    """
+    Adds a pending moneyline/spread parlay. Each leg is "TEAM:moneyline" or
+    "TEAM:spread:LINE" (LINE written the way you'd say it out loud, e.g.
+    "TB:spread:10" for TB +10, "KC:spread:-3.5" for KC -3.5). One row is
+    stored with bet_type="parlay"; the legs live in the `legs` column as
+    "game_id|team|type|line;..." and are graded together by grade_bets.
+    """
+    parsed = []
+    for leg in legs:
+        parts = leg.split(":")
+        team = parts[0].upper()
+        btype = parts[1] if len(parts) > 1 else "moneyline"
+        line = float(parts[2]) if len(parts) > 2 else None
+        game = _find_game(season, week, team)
+        opp = game["away_team"] if game["home_team"] == team else game["home_team"]
+        parsed.append((game["game_id"], team, opp, btype, line))
+
+    bets = _load_bets()
+    teams = "+".join(p[1] for p in parsed)
+    bet_id = f"{parsed[0][0]}_{teams}_parlay"
+    if not bets.empty and bet_id in set(bets["bet_id"]):
+        print(f"[skip] Parlay already recorded: {bet_id}")
+        return bet_id
+
+    legs_str = ";".join(f"{g}|{t}|{b}|{'' if l is None else l}" for g, t, _, b, l in parsed)
+    row = pd.DataFrame([{
+        "bet_id": bet_id, "season": season, "week": week, "game_id": parsed[0][0],
+        "team": teams, "opponent": "/".join(p[2] for p in parsed), "is_home": np.nan,
+        "bet_type": "parlay", "line": np.nan, "odds": odds, "stake": stake,
+        "placed_at": pd.Timestamp.now(tz="UTC"),
+        "result": "pending", "actual_margin": np.nan, "graded_at": pd.NaT,
+        "notes": notes, "legs": legs_str,
+    }])
+    bets = pd.concat([bets, row], ignore_index=True)
+    _save_bets(bets)
+    print(f"[added] {len(parsed)}-leg parlay: {teams} (Week {week})")
+    return bet_id
+
+
+def _grade_parlay(legs_str: str, schedules: pd.DataFrame):
+    """Returns (result, n_final_legs) or None if still undecided. Any lost
+    leg loses the parlay immediately; pushes drop out; all legs must be
+    final to win."""
+    results = []
+    for leg in legs_str.split(";"):
+        gid, team, btype, line = leg.split("|")
+        match = schedules[schedules["game_id"] == gid]
+        if match.empty or pd.isna(match.iloc[0]["home_score"]):
+            results.append(None)
+            continue
+        m = match.iloc[0]
+        leg_bet = pd.Series({"is_home": m["home_team"] == team, "bet_type": btype,
+                             "line": float(line) if line else np.nan})
+        res, _ = _grade_one(leg_bet, m["home_score"], m["away_score"])
+        results.append(res)
+    if "loss" in results:
+        return "loss"
+    if any(r is None for r in results):
+        return None
+    live = [r for r in results if r != "push"]
+    return "win" if live else "push"
+
+
 def _grade_one(bet: pd.Series, home_score: float, away_score: float) -> tuple[str, float]:
     team_score = home_score if bet["is_home"] else away_score
     opp_score = away_score if bet["is_home"] else home_score
@@ -153,6 +220,15 @@ def grade_bets(season: int, week: int = None):
 
     graded_n = 0
     for idx in bets[mask].index:
+        if bets.at[idx, "bet_type"] == "parlay":
+            if pd.isna(bets.at[idx, "legs"]):
+                continue
+            outcome = _grade_parlay(bets.at[idx, "legs"], schedules)
+            if outcome is not None:
+                bets.at[idx, "result"] = outcome
+                bets.at[idx, "graded_at"] = pd.Timestamp.now(tz="UTC")
+                graded_n += 1
+            continue
         match = schedules[schedules["game_id"] == bets.at[idx, "game_id"]]
         if match.empty or pd.isna(match.iloc[0]["home_score"]):
             continue
@@ -213,6 +289,14 @@ def main():
     p_add.add_argument("--stake", type=float, default=None)
     p_add.add_argument("--notes", default=None)
 
+    p_parlay = sub.add_parser("add-parlay", help="Record a parlay, e.g. --legs TB:moneyline SF:moneyline")
+    p_parlay.add_argument("--season", type=int, default=config.CURRENT_SEASON)
+    p_parlay.add_argument("--week", type=int, required=True)
+    p_parlay.add_argument("--legs", nargs="+", required=True)
+    p_parlay.add_argument("--odds", type=float, default=None)
+    p_parlay.add_argument("--stake", type=float, default=None)
+    p_parlay.add_argument("--notes", default=None)
+
     p_grade = sub.add_parser("grade", help="Grade pending bets against final scores")
     p_grade.add_argument("--season", type=int, default=config.CURRENT_SEASON)
     p_grade.add_argument("--week", type=int, default=None)
@@ -225,6 +309,8 @@ def main():
     if args.command == "add":
         add_bet(args.season, args.week, args.team, args.bet_type, args.line,
                 args.odds, args.stake, args.notes)
+    elif args.command == "add-parlay":
+        add_parlay(args.season, args.week, args.legs, args.odds, args.stake, args.notes)
     elif args.command == "grade":
         grade_bets(args.season, args.week)
     elif args.command == "report":

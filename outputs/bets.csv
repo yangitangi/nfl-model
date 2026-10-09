@@ -1,21 +1,24 @@
-bet_id,season,week,game_id,team,opponent,is_home,bet_type,line,odds,stake,placed_at,result,actual_margin,graded_at,notes
-2026_01_NE_SEA_SEA_moneyline,2026,1,2026_01_NE_SEA,SEA,NE,True,moneyline,,,,2026-09-11 21:10:31.126943+00:00,win,3.0,2026-09-11 21:11:03.996805+00:00,
-2026_01_NE_SEA_SEA_spread_-3.0,2026,1,2026_01_NE_SEA,SEA,NE,True,spread,-3.0,,,2026-09-11 21:10:31.974309+00:00,push,3.0,2026-09-11 21:11:03.998812+00:00,
-2026_01_SF_LA_SF_spread_4.0,2026,1,2026_01_SF_LA,SF,LA,False,spread,4.0,,,2026-09-11 21:10:32.824454+00:00,win,20.0,2026-09-11 21:11:03.999815+00:00,
-2026_01_TB_CIN_TB_spread_3.5,2026,1,2026_01_TB_CIN,TB,CIN,False,spread,3.5,,,2026-09-11 21:10:33.686158+00:00,loss,-6.0,2026-09-14 00:17:20.252343+00:00,
-2026_01_CHI_CAR_CAR_spread_3.5,2026,1,2026_01_CHI_CAR,CAR,CHI,True,spread,3.5,,,2026-09-11 21:10:34.544659+00:00,loss,-22.0,2026-09-14 00:17:20.253343+00:00,
-2026_01_MIA_LV_MIA_spread_3.5,2026,1,2026_01_MIA_LV,MIA,LV,False,spread,3.5,,,2026-09-11 21:10:35.395003+00:00,loss,-14.0,2026-09-14 00:17:20.255345+00:00,
-2026_01_DAL_NYG_NYG_spread_3.5,2026,1,2026_01_DAL_NYG,NYG,DAL,True,spread,3.5,,,2026-09-14 00:17:08.604947+00:00,win,8.0,2026-09-14 23:38:03.553077+00:00,
-2026_01_BAL_IND_BAL_moneyline,2026,1,2026_01_BAL_IND,BAL,IND,False,moneyline,,,,2026-09-14 00:17:10.329680+00:00,win,18.0,2026-09-14 00:17:20.258348+00:00,
-2026_01_BUF_HOU_HOU_spread_1.5,2026,1,2026_01_BUF_HOU,HOU,BUF,True,spread,1.5,,,2026-09-14 00:17:11.567895+00:00,loss,-5.0,2026-09-14 00:17:20.259349+00:00,
-2026_01_GB_MIN_MIN_spread_1.5,2026,1,2026_01_GB_MIN,MIN,GB,True,spread,1.5,,,2026-09-14 00:17:13.456273+00:00,win,17.0,2026-09-14 00:17:20.261382+00:00,
-2026_01_ARI_LAC_ARI_spread_10.5,2026,1,2026_01_ARI_LAC,ARI,LAC,False,spread,10.5,,,2026-09-14 00:17:14.332185+00:00,win,12.0,2026-09-14 00:17:20.262384+00:00,
-2026_01_CLE_JAX_CLE_spread_9.5,2026,1,2026_01_CLE_JAX,CLE,JAX,False,spread,9.5,,,2026-09-14 00:17:15.225535+00:00,loss,-24.0,2026-09-14 00:17:20.264617+00:00,
-2026_04_PIT_CLE_CLE_spread_3.0,2026,4,2026_04_PIT_CLE,CLE,PIT,True,spread,3.0,,,,win,3.0,2026-10-03 00:45:08.917010+00:00,"User's own pre-game read (CLE +3), logged and graded alongside the three-way call record for this game."
-2026_04_DET_CAR_CAR_spread_4.5,2026,4,2026_04_DET_CAR,CAR,DET,True,spread,4.5,,,2026-10-05 23:14:57.306492+00:00,win,6.0,2026-10-05 23:15:02.601782+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded."
-2026_04_DEN_SF_DEN_spread_3.0,2026,4,2026_04_DEN_SF,DEN,SF,False,spread,3.0,,,2026-10-05 23:14:58.178843+00:00,loss,-10.0,2026-10-05 23:15:02.602792+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded."
-2026_04_KC_LV_KC_spread_-3.5,2026,4,2026_04_KC_LV,KC,LV,False,spread,-3.5,,,2026-10-05 23:14:59.041415+00:00,loss,3.0,2026-10-05 23:15:02.604808+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded."
-2026_04_MIA_MIN_MIA_spread_11.5,2026,4,2026_04_MIA_MIN,MIA,MIN,False,spread,11.5,,,2026-10-05 23:14:59.924334+00:00,win,-5.0,2026-10-05 23:15:02.605818+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded."
-2026_04_JAX_CIN_CIN_moneyline,2026,4,2026_04_JAX_CIN,CIN,JAX,True,moneyline,,,,2026-10-05 23:15:00.863936+00:00,loss,-5.0,2026-10-05 23:15:02.607831+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded."
-2026_04_LAC_SEA_SEA+KC_parlay_moneyline,2026,4,2026_04_LAC_SEA,SEA+KC,LAC/LV,,parlay,,,,,win,,,"2-leg moneyline parlay: SEA ML (beat LAC 30-23) + KC ML (beat LV 30-27), both legs won. Logged retroactively on 2026-10-05; odds/stake not recorded."
-2026_04_ATL_NO_ATL_spread_1.5,2026,4,2026_04_ATL_NO,ATL,NO,False,spread,1.5,,,2026-10-06 11:47:35.690829+00:00,win,21.0,2026-10-06 11:47:37.416933+00:00,Logged 2026-10-06 per the MNF recommendation (ATL +1.5); also would have won as ATL moneyline. ATL won 45-24 as a road dog. Odds/stake not recorded -- tell me if you took the ML instead.
+bet_id,season,week,game_id,team,opponent,is_home,bet_type,line,odds,stake,placed_at,result,actual_margin,graded_at,notes,legs
+2026_01_NE_SEA_SEA_moneyline,2026,1,2026_01_NE_SEA,SEA,NE,True,moneyline,,,,2026-09-11 21:10:31.126943+00:00,win,3.0,2026-09-11 21:11:03.996805+00:00,,
+2026_01_NE_SEA_SEA_spread_-3.0,2026,1,2026_01_NE_SEA,SEA,NE,True,spread,-3.0,,,2026-09-11 21:10:31.974309+00:00,push,3.0,2026-09-11 21:11:03.998812+00:00,,
+2026_01_SF_LA_SF_spread_4.0,2026,1,2026_01_SF_LA,SF,LA,False,spread,4.0,,,2026-09-11 21:10:32.824454+00:00,win,20.0,2026-09-11 21:11:03.999815+00:00,,
+2026_01_TB_CIN_TB_spread_3.5,2026,1,2026_01_TB_CIN,TB,CIN,False,spread,3.5,,,2026-09-11 21:10:33.686158+00:00,loss,-6.0,2026-09-14 00:17:20.252343+00:00,,
+2026_01_CHI_CAR_CAR_spread_3.5,2026,1,2026_01_CHI_CAR,CAR,CHI,True,spread,3.5,,,2026-09-11 21:10:34.544659+00:00,loss,-22.0,2026-09-14 00:17:20.253343+00:00,,
+2026_01_MIA_LV_MIA_spread_3.5,2026,1,2026_01_MIA_LV,MIA,LV,False,spread,3.5,,,2026-09-11 21:10:35.395003+00:00,loss,-14.0,2026-09-14 00:17:20.255345+00:00,,
+2026_01_DAL_NYG_NYG_spread_3.5,2026,1,2026_01_DAL_NYG,NYG,DAL,True,spread,3.5,,,2026-09-14 00:17:08.604947+00:00,win,8.0,2026-09-14 23:38:03.553077+00:00,,
+2026_01_BAL_IND_BAL_moneyline,2026,1,2026_01_BAL_IND,BAL,IND,False,moneyline,,,,2026-09-14 00:17:10.329680+00:00,win,18.0,2026-09-14 00:17:20.258348+00:00,,
+2026_01_BUF_HOU_HOU_spread_1.5,2026,1,2026_01_BUF_HOU,HOU,BUF,True,spread,1.5,,,2026-09-14 00:17:11.567895+00:00,loss,-5.0,2026-09-14 00:17:20.259349+00:00,,
+2026_01_GB_MIN_MIN_spread_1.5,2026,1,2026_01_GB_MIN,MIN,GB,True,spread,1.5,,,2026-09-14 00:17:13.456273+00:00,win,17.0,2026-09-14 00:17:20.261382+00:00,,
+2026_01_ARI_LAC_ARI_spread_10.5,2026,1,2026_01_ARI_LAC,ARI,LAC,False,spread,10.5,,,2026-09-14 00:17:14.332185+00:00,win,12.0,2026-09-14 00:17:20.262384+00:00,,
+2026_01_CLE_JAX_CLE_spread_9.5,2026,1,2026_01_CLE_JAX,CLE,JAX,False,spread,9.5,,,2026-09-14 00:17:15.225535+00:00,loss,-24.0,2026-09-14 00:17:20.264617+00:00,,
+2026_04_PIT_CLE_CLE_spread_3.0,2026,4,2026_04_PIT_CLE,CLE,PIT,True,spread,3.0,,,,win,3.0,2026-10-03 00:45:08.917010+00:00,"User's own pre-game read (CLE +3), logged and graded alongside the three-way call record for this game.",
+2026_04_DET_CAR_CAR_spread_4.5,2026,4,2026_04_DET_CAR,CAR,DET,True,spread,4.5,,,2026-10-05 23:14:57.306492+00:00,win,6.0,2026-10-05 23:15:02.601782+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded.",
+2026_04_DEN_SF_DEN_spread_3.0,2026,4,2026_04_DEN_SF,DEN,SF,False,spread,3.0,,,2026-10-05 23:14:58.178843+00:00,loss,-10.0,2026-10-05 23:15:02.602792+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded.",
+2026_04_KC_LV_KC_spread_-3.5,2026,4,2026_04_KC_LV,KC,LV,False,spread,-3.5,,,2026-10-05 23:14:59.041415+00:00,loss,3.0,2026-10-05 23:15:02.604808+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded.",
+2026_04_MIA_MIN_MIA_spread_11.5,2026,4,2026_04_MIA_MIN,MIA,MIN,False,spread,11.5,,,2026-10-05 23:14:59.924334+00:00,win,-5.0,2026-10-05 23:15:02.605818+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded.",
+2026_04_JAX_CIN_CIN_moneyline,2026,4,2026_04_JAX_CIN,CIN,JAX,True,moneyline,,,,2026-10-05 23:15:00.863936+00:00,loss,-5.0,2026-10-05 23:15:02.607831+00:00,"Logged retroactively on 2026-10-05 after the game; line as stated by user, odds/stake not recorded.",
+2026_04_LAC_SEA_SEA+KC_parlay_moneyline,2026,4,2026_04_LAC_SEA,SEA+KC,LAC/LV,,parlay,,,,,win,,,"2-leg moneyline parlay: SEA ML (beat LAC 30-23) + KC ML (beat LV 30-27), both legs won. Logged retroactively on 2026-10-05; odds/stake not recorded.",
+2026_04_ATL_NO_ATL_spread_1.5,2026,4,2026_04_ATL_NO,ATL,NO,False,spread,1.5,,,2026-10-06 11:47:35.690829+00:00,win,21.0,2026-10-06 11:47:37.416933+00:00,Logged 2026-10-06 per the MNF recommendation (ATL +1.5); also would have won as ATL moneyline. ATL won 45-24 as a road dog. Odds/stake not recorded -- tell me if you took the ML instead.,
+2026_05_TB_DAL_TB_spread_10.0,2026,5,2026_05_TB_DAL,TB,DAL,False,spread,10.0,,,2026-10-09 00:51:39.905959+00:00,pending,,,Logged 2026-10-08 (TNF in progress when logged); odds/stake not recorded.,
+2026_05_TB_DAL_TB+SF_parlay,2026,5,2026_05_TB_DAL,TB+SF,DAL/SEA,,parlay,,,,2026-10-09 00:51:40.840340+00:00,pending,,,Logged 2026-10-08 (TNF in progress when logged); odds/stake not recorded. Parlay: TB ML + SF ML.,2026_05_TB_DAL|TB|moneyline|;2026_05_SF_SEA|SF|moneyline|
+2026_05_TB_DAL_DAL+HOU+JAX_parlay,2026,5,2026_05_TB_DAL,DAL+HOU+JAX,TB/TEN/PHI,,parlay,,,,2026-10-09 00:51:41.773383+00:00,pending,,,Logged 2026-10-08 (TNF in progress when logged); odds/stake not recorded. Parlay: DAL ML + HOU ML + JAX ML.,2026_05_TB_DAL|DAL|moneyline|;2026_05_HOU_TEN|HOU|moneyline|;2026_05_PHI_JAX|JAX|moneyline|
