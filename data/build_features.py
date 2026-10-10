@@ -918,15 +918,21 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
     if not injury_burden_upcoming.empty:
         prior_mean = injury_burden_upcoming.groupby("team")["injury_burden"].mean()
         league_mean = injury_burden_upcoming["injury_burden"].mean()
-        reported_counts = injury_burden_upcoming.groupby("week")["team"].nunique()
+        # Practice-participation rows appear Wed/Thu, but game designations
+        # (Out/Doubtful/Questionable) only post Friday -- count teams that
+        # actually carry a designation, not teams with any row at all.
+        designated = current_injuries[current_injuries["report_status"].notna()]
+        reported_counts = designated.groupby("week")["team"].nunique()
         for week in upcoming["week"].unique():
             if reported_counts.get(week, 0) >= 16:
                 continue
             wk = upcoming["week"] == week
+            has_designation = set(designated.loc[designated["week"] == week, "team"])
             for side in ("home", "away"):
                 fill = upcoming.loc[wk, f"{side}_team"].map(prior_mean).fillna(league_mean)
                 col = f"{side}_injury_burden"
-                upcoming.loc[wk, col] = upcoming.loc[wk, col].fillna(fill)
+                keep = upcoming.loc[wk, f"{side}_team"].isin(has_designation)
+                upcoming.loc[wk, col] = np.where(keep, upcoming.loc[wk, col], fill)
     upcoming["home_injury_burden"] = upcoming["home_injury_burden"].fillna(0)
     upcoming["away_injury_burden"] = upcoming["away_injury_burden"].fillna(0)
     upcoming["home_injury_burden_bucket"] = bucket_injury_burden(upcoming["home_injury_burden"])
