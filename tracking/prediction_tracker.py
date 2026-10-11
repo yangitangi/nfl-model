@@ -370,6 +370,8 @@ def update_results(season: int, week: int):
         total_line = log.at[idx, "open_total_line"]
         winner_correct = (pred_margin > 0 and actual_winner == "home") or \
                           (pred_margin < 0 and actual_winner == "away")
+        if actual_winner == "tie":
+            winner_correct = None  # a tie is a push, not a wrong winner call
         spread_correct = None
         if pd.notna(spread_line):
             covered_home = (actual_margin - spread_line) > 0

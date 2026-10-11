@@ -100,6 +100,22 @@ def fetch_all_seasons(seasons: list[int] = None, force_refresh: bool = False) ->
     return combined
 
 
+def _apply_manual_scores(df: pd.DataFrame) -> pd.DataFrame:
+    """Fills final scores for games the nflverse feed hasn't recorded yet
+    (it can lag hours behind a finished game) from
+    outputs/manual_scores.csv (game_id, home_score, away_score, note).
+    The feed always wins once it has a score."""
+    path = config.OUTPUTS_DIR / "manual_scores.csv"
+    if df.empty or not path.exists():
+        return df
+    manual = pd.read_csv(path).set_index("game_id")
+    df = df.copy()
+    for col in ("home_score", "away_score"):
+        fill = df["game_id"].map(manual[col])
+        df[col] = df[col].where(df[col].notna(), fill)
+    return df
+
+
 def fetch_schedules(force_refresh: bool = False, min_season: int = None,
                      max_season: int = None) -> pd.DataFrame:
     """
@@ -120,7 +136,7 @@ def fetch_schedules(force_refresh: bool = False, min_season: int = None,
     if local_path.exists() and not force_refresh:
         print(f"  [cache] Schedules already on disk -> {local_path.name}")
         df = pd.read_parquet(local_path)
-        return df[df["season"].between(min_season, max_season)]
+        return _apply_manual_scores(df[df["season"].between(min_season, max_season)])
 
     print("  [download] Schedules from nflverse...")
     try:
@@ -134,7 +150,7 @@ def fetch_schedules(force_refresh: bool = False, min_season: int = None,
     df = pd.read_parquet(local_path)
     df = df[df["season"].between(min_season, max_season)]
     print(f"  [saved] {len(df):,} games -> {local_path.name}")
-    return df
+    return _apply_manual_scores(df)
 
 
 def fetch_injuries_season(season: int, force_refresh: bool = False) -> pd.DataFrame:

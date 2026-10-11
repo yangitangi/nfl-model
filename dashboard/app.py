@@ -363,7 +363,10 @@ def render_result_card(row, team_logos: dict, bets: pd.DataFrame = None) -> str:
         label = "Correct" if correct else "Wrong"
         return f'<span class="edge-badge {cls}">{label}</span>'
 
-    winner_badge = badge(bool(row["winner_correct"]))
+    if row["home_score"] == row["away_score"]:
+        winner_badge = '<span class="edge-badge">Push (tie)</span>'
+    else:
+        winner_badge = badge(bool(row["winner_correct"]))
     spread_badge = badge(None if row["spread_correct"] is None else bool(row["spread_correct"]))
     own_line_badge = badge(bool(row["beat_own_line"]))
 
@@ -515,7 +518,10 @@ def render_model_results_table(week_predictions: pd.DataFrame) -> str:
             actual_cell = f'<b>{r["away_score"]:.0f}&ndash;{r["home_score"]:.0f}</b> ({actual_spread})'
         else:
             actual_cell = "TBD"
-        winner_badge = badge(r["winner_correct"])
+        if r["is_final"] and r["home_score"] == r["away_score"]:
+            winner_badge = '<span class="edge-badge">Push (tie)</span>'
+        else:
+            winner_badge = badge(r["winner_correct"])
         spread_badge = badge(r["spread_correct"])
         own_line_badge = badge(r["beat_own_line"])
         rows.append(
@@ -530,7 +536,8 @@ def render_model_results_table(week_predictions: pd.DataFrame) -> str:
 
     final = week_predictions[week_predictions["is_final"]]
     n = len(final)
-    win_acc = final["winner_correct"].mean() if n else None
+    decided = final[final["home_score"] != final["away_score"]]
+    win_acc = decided["winner_correct"].astype(float).mean() if len(decided) else None
     win_str = f"{win_acc:.0%}" if win_acc is not None else "n/a"
     ats_valid = final["spread_correct"].dropna()
     ats_acc = ats_valid.mean() if not ats_valid.empty else None
