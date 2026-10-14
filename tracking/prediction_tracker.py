@@ -129,7 +129,7 @@ def _now() -> pd.Timestamp:
 # ---------------------------------------------------------------------------
 # SNAPSHOT — record this week's prediction + market line at prediction time
 # ---------------------------------------------------------------------------
-def snapshot(season: int, week: int):
+def snapshot(season: int, week: int, only_games: list[str] = None):
     log = _load_log()
     already_logged = set(log.loc[log["week"] == week, "game_id"]) if not log.empty else set()
 
@@ -139,6 +139,8 @@ def snapshot(season: int, week: int):
         print(f"No Week {week} games found for season {season}.")
         return
 
+    if only_games:
+        week_games = week_games[week_games["game_id"].isin(only_games)]
     new_games = week_games[~week_games["game_id"].isin(already_logged)]
     if new_games.empty:
         print(f"All {len(week_games)} Week {week} games are already snapshotted. "
@@ -558,7 +560,10 @@ def main():
         p.add_argument("--season", type=int, default=config.CURRENT_SEASON)
         p.add_argument("--week", type=int, required=week_required, default=None)
 
-    add_common_args(sub.add_parser("snapshot", help="Record this week's prediction + market line"), True)
+    p_snap = sub.add_parser("snapshot", help="Record this week's prediction + market line")
+    add_common_args(p_snap, True)
+    p_snap.add_argument("--games", nargs="+", default=None,
+                        help="Only snapshot these game_ids (e.g. a Thursday game once its report posts)")
     add_common_args(sub.add_parser("update-closing", help="Refresh the market line for logged games"), True)
     add_common_args(sub.add_parser("update-results", help="Grade logged games against final scores"), True)
     add_common_args(sub.add_parser("retro-week", help="Fallback: log+grade a played week that was never snapshotted"), True)
@@ -567,7 +572,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "snapshot":
-        snapshot(args.season, args.week)
+        snapshot(args.season, args.week, args.games)
     elif args.command == "update-closing":
         update_closing_lines(args.season, args.week)
     elif args.command == "update-results":
