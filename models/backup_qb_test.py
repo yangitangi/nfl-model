@@ -73,61 +73,49 @@ def walk_forward_predictions(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
-    df = pd.read_parquet(config.PROCESSED_DATA_DIR / "game_level_features.parquet")
-    preds = walk_forward_predictions(df)
-    prim = primary_passers()
+    """Uses the PROSPECTIVE flag in models/backup_qb.py. An earlier version
+    of this test defined 'backup start' as 'first passer != the QB who led
+    the team in dropbacks over the whole season' -- that peeks at the
+    future (benched starters' early games get tagged as backup starts) and
+    showed a spurious ~44% cover rate. With a flag built only from games
+    before kickoff the effect disappears (see output)."""
+    from models.backup_qb import historical_backup_flags
+
+    cache = config.OUTPUTS_DIR / "walk_forward_preds_2014_2025.pkl"
+    if cache.exists():
+        preds = pd.read_pickle(cache)
+    else:
+        df = pd.read_parquet(config.PROCESSED_DATA_DIR / "game_level_features.parquet")
+        preds = walk_forward_predictions(df)
+        preds.to_pickle(cache)
+    flags = historical_backup_flags()
 
     rows = []
     for side, team_col in (("home", "home_team"), ("away", "away_team")):
-        m = preds.merge(prim, left_on=["game_id", team_col], right_on=["game_id", "posteam"], how="inner",
-                        suffixes=("", "_q"))
-        m = m[m["backup_start"]].copy()
+        m = preds.merge(flags, left_on=["game_id", team_col], right_on=["game_id", "team"])
         sign = 1 if side == "home" else -1
-        m["team"] = m[team_col]
         m["team_actual"] = sign * m["actual_margin"]
         m["team_mkt"] = sign * m["spread_line"]
         m["team_model"] = sign * m["pred_margin"]
         rows.append(m)
-    b = pd.concat(rows, ignore_index=True)
-    b = b[b["team_actual"] != b["team_mkt"]].copy()
+    a = pd.concat(rows, ignore_index=True)
+    a = a[a["team_actual"] != a["team_mkt"]].copy()
+    a["cover"] = a["team_actual"] > a["team_mkt"]
+    a["edge"] = a["team_model"] - a["team_mkt"]
+    b = a[a["backup_flag"]].copy()
 
-    b["edge"] = b["team_model"] - b["team_mkt"]
-    b["cover"] = b["team_actual"] > b["team_mkt"]
-    b["underdog"] = b["team_mkt"] < 0
-    b["model_likes_team"] = b["edge"] > 0
-    b["model_right"] = b["model_likes_team"] == b["cover"]
+    def line(x, label):
+        print(f"{label:<40} n={len(x):<4} cover={x['cover'].mean():.1%}  "
+              f"mkt_err={(x['team_actual'] - x['team_mkt']).mean():+.2f}  "
+              f"model_err={(x['team_actual'] - x['team_model']).mean():+.2f}")
 
-    def summarize(x: pd.DataFrame, label: str):
-        n = len(x)
-        if n == 0:
-            print(f"{label:<44} n=0")
-            return
-        print(f"{label:<44} n={n:<4} cover={x['cover'].mean():.1%}  "
-              f"mkt_err={ (x['team_actual'] - x['team_mkt']).mean():+.2f}  "
-              f"model_err={(x['team_actual'] - x['team_model']).mean():+.2f}  "
-              f"model_ATS={x['model_right'].mean():.1%}")
-
-    print(f"\nBackup-QB team-games (leader had >= {MIN_LEADER_GAMES} starts), "
-          f"{FIRST_TEST_SEASON}-{int(b['season'].max())}, vs closing line\n")
-    summarize(b, "ALL backup-QB teams")
-    summarize(b[b["underdog"]], "  backup team is underdog")
-    summarize(b[~b["underdog"]], "  backup team is favorite")
-    summarize(b[b["model_likes_team"]], "  model LIKES backup team vs market")
-    summarize(b[~b["model_likes_team"]], "  model FADES backup team vs market")
-    summarize(b[b["model_likes_team"] & b["underdog"]], "  model likes backup team AND underdog")
-    summarize(b[(~b["model_likes_team"]) & b["underdog"]], "  model fades backup team, underdog")
-    big = b[b["edge"].abs() >= 2]
-    summarize(big, "  |model - market| >= 2 pts")
-    summarize(big[big["model_likes_team"]], "    ...likes backup team")
-    summarize(big[~big["model_likes_team"]], "    ...fades backup team")
-    print("\nBy season (cover rate of backup-QB teams):")
-    print(b.groupby("season").agg(n=("cover", "size"), cover=("cover", "mean")).round(3).T.to_string())
-    print("\nAll games for comparison (model ATS across the same seasons):")
-    allg = preds[preds["actual_margin"] != preds["spread_line"]]
-    allg_edge = allg["pred_margin"] - allg["spread_line"]
-    print(f"  n={len(allg)}  model_ATS={((allg_edge > 0) == (allg['actual_margin'] > allg['spread_line'])).mean():.1%}")
-
-    b.to_pickle(config.OUTPUTS_DIR / "backup_qb_test_games.pkl")
+    print(f"\nProspective backup-QB team-games, {int(a['season'].min())}-{int(a['season'].max())}, vs closing line\n")
+    line(a[~a["backup_flag"]], "all other team-games")
+    line(b, "backup-QB start (flagged)")
+    line(b[b["edge"] > 0], "  model likes the backup team")
+    line(b[b["edge"] <= 0], "  model fades the backup team")
+    for lo, hi in ((2014, 2019), (2020, 2025)):
+        line(b[b["season"].between(lo, hi)], f"  {lo}-{hi}")
 
 
 if __name__ == "__main__":
