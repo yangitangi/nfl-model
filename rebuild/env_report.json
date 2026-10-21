@@ -1,0 +1,39 @@
+{
+  "python": "3.11.5",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "cpu_count": 24,
+  "disk_free_gb": 212.7,
+  "libs": {
+    "pandas": "3.0.5",
+    "numpy": "2.4.6",
+    "pyarrow": "24.0.0",
+    "sklearn": "1.9.0",
+    "xgboost": "3.2.0",
+    "lightgbm": null,
+    "scipy": "1.17.1",
+    "statsmodels": null,
+    "pymc": null,
+    "arviz": null,
+    "cmdstanpy": null,
+    "torch": null,
+    "streamlit": "1.61.1",
+    "requests": "2.34.2"
+  },
+  "network": {
+    "nflverse_schedules": {
+      "ok": true,
+      "status": 200,
+      "seconds": 0.19
+    },
+    "nflverse_pbp_2025": {
+      "ok": true,
+      "status": 200,
+      "seconds": 0.13
+    },
+    "pypi": {
+      "ok": true,
+      "status": 200,
+      "seconds": 0.06
+    }
+  }
+}
