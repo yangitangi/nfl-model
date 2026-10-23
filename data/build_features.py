@@ -933,6 +933,21 @@ def build_upcoming_features(season: int = None, force_refresh: bool = False) -> 
                 col = f"{side}_injury_burden"
                 keep = upcoming.loc[wk, f"{side}_team"].isin(has_designation)
                 upcoming.loc[wk, col] = np.where(keep, upcoming.loc[wk, col], fill)
+        # Hand-entered burdens from the official report for the window when it
+        # is public but nflverse hasn't caught up yet (outputs/manual_injury_burden.csv:
+        # season, week, team, injury_burden). Ignored once the feed has >=16
+        # designated teams for that week, so it can never go stale.
+        manual_path = config.OUTPUTS_DIR / "manual_injury_burden.csv"
+        if manual_path.exists():
+            manual = pd.read_csv(manual_path)
+            for week, mw in manual[manual["season"] == season].groupby("week"):
+                if reported_counts.get(week, 0) >= 16:
+                    continue
+                lookup = dict(zip(mw["team"], mw["injury_burden"]))
+                wk = upcoming["week"] == week
+                for side in ("home", "away"):
+                    col = f"{side}_injury_burden"
+                    upcoming.loc[wk, col] = [lookup.get(t, v) for t, v in zip(upcoming.loc[wk, f"{side}_team"], upcoming.loc[wk, col])]
     upcoming["home_injury_burden"] = upcoming["home_injury_burden"].fillna(0)
     upcoming["away_injury_burden"] = upcoming["away_injury_burden"].fillna(0)
     upcoming["home_injury_burden_bucket"] = bucket_injury_burden(upcoming["home_injury_burden"])
