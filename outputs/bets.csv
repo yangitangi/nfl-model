@@ -37,5 +37,5 @@ bet_id,season,week,game_id,team,opponent,is_home,bet_type,line,odds,stake,placed
 2026_06_BAL_CLE_CLE_spread_4.5,2026,6,2026_06_BAL_CLE,CLE,BAL,True,spread,4.5,,,2026-10-16 01:46:38.700249+00:00,win,3.0,2026-10-19 00:43:14.043797+00:00,"Logged 2026-10-15 per user; line as stated, odds/stake not recorded.",
 2026_06_BUF_LV_LV_spread_6.0,2026,6,2026_06_BUF_LV,LV,BUF,True,spread,6.0,,,2026-10-19 00:45:24.332803+00:00,win,-3.0,2026-10-19 00:45:26.490908+00:00,"Logged 2026-10-18 per user; line as stated, odds/stake not recorded.",
 2026_07_CIN_BAL_CIN_spread_3.5,2026,7,2026_07_CIN_BAL,CIN,BAL,False,spread,3.5,,,2026-10-23 11:40:55.467491+00:00,win,22.0,2026-10-25 23:37:18.479059+00:00,"Logged 2026-10-23 per user; line as stated, odds/stake not recorded.",
-2026_07_LA_LV_LV_spread_6.0,2026,7,2026_07_LA_LV,LV,LA,True,spread,6.0,,,2026-10-23 11:40:56.462194+00:00,pending,,,"Logged 2026-10-23 per user; line as stated, odds/stake not recorded.",
+2026_07_LA_LV_LV_spread_6.0,2026,7,2026_07_LA_LV,LV,LA,True,spread,6.0,,,2026-10-23 11:40:56.462194+00:00,loss,-14.0,2026-10-25 23:48:46.083779+00:00,"Logged 2026-10-23 per user; line as stated, odds/stake not recorded.",
 2026_07_KC_SEA_KC_spread_2.0,2026,7,2026_07_KC_SEA,KC,SEA,False,spread,2.0,,,2026-10-23 11:40:57.467179+00:00,pending,,,"Logged 2026-10-23 per user; line as stated, odds/stake not recorded.",
