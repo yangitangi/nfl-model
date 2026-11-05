@@ -1,0 +1,2 @@
+predicted_at_utc,game_id,week,kickoff_utc,home_team,away_team,home_qb_id,away_qb_id,line_at_pred,total_at_pred,f1_spread,f1_edge,alite_pred_resid,alite_post_sd,alite_z,l1_top_quintile,l1_fade_side,home_inj_report_missing,away_inj_report_missing,code_commit
+2026-11-05T00:36:24.922143+00:00,2026_09_JAX_BAL,9,2026-11-06T01:15:00+00:00,BAL,JAX,00-0040981,00-0036971,-10.0,39.5,-10.061,-0.061,-1.1835,1.9462,-0.6081,1,home,0,0,b28b2d1
