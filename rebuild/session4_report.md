@@ -143,9 +143,14 @@ Two caveats:
    - late inactive or injury news between the snapshot and kickoff.
 
    Each would need to be pre-registered like L1, with power for n ≥ 300. Expect most to fail.
-4. **Keep L1 parked, not dead.** Re-test it once more on the full 2026 season plus 2027 under the same frozen rule.
-   It needs about 400+ bets to detect a 53.5% effect, which is about 2 seasons. A real edge here is unlikely
-   (prior ≤ 20%).
+4. **Keep L1 parked, not dead.** Re-test it on forward data under the same frozen rule.
+   **Correction (2026-11-05):** an earlier version of this item said that detecting a 53.5% effect needs "about
+   400+ bets, about 2 seasons". That was wrong.
+   - About 24% of games qualify, roughly 65 bets per season, so 400 bets is about 6 seasons.
+   - 80% power at 53.5% needs about 1,260 bets, about 19 seasons.
+
+   The forward re-test (L1b in `rebuild/PREREGISTRATION_2.md`) can therefore only confirm a large effect (an
+   observed rate of about 60% or more at n ≈ 100 by the end of 2027). A real edge here is unlikely (prior ≤ 20%).
 5. **Do not spend more sessions on new architectures** (deep learning, MCMC, larger GBMs) using the same public
    features. Sessions 2-3 showed the information is already in the line.
 
